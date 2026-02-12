@@ -100,8 +100,8 @@ install_python_deps() {
             UV_EXTRA_INDEX_URL="https://download.pytorch.org/whl/cpu" uv sync --no-cache --index-strategy unsafe-best-match
         fi
 
-        # 安装 API Server 额外依赖 (fastapi, uvicorn)
-        uv pip install fastapi uvicorn[standard]
+        # 安装 API Server 额外依赖 (fastapi, uvicorn, python-multipart)
+        uv pip install fastapi uvicorn[standard] python-multipart
     else
         echo "   使用 pip 管理环境..."
         python3 -m venv venv
@@ -116,7 +116,7 @@ install_python_deps() {
         fi
 
         pip install -r requirements.txt 2>/dev/null || pip install .
-        pip install fastapi uvicorn[standard]
+        pip install fastapi uvicorn[standard] python-multipart
     fi
 }
 

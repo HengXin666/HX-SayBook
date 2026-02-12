@@ -12,6 +12,7 @@ import {
   SettingOutlined,
   SoundOutlined,
   ThunderboltOutlined,
+  UnorderedListOutlined,
   UploadOutlined
 } from '@ant-design/icons';
 import {
@@ -40,6 +41,9 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { chapterApi, emotionApi, lineApi, llmProviderApi, projectApi, promptApi, roleApi, strengthApi, ttsProviderApi, voiceApi } from '../api';
+import BatchLLMModal from '../components/BatchLLMModal';
+import BatchTTSModal from '../components/BatchTTSModal';
+import SpeedControl from '../components/SpeedControl';
 import { useWebSocket } from '../hooks/useWebSocket';
 import type { Chapter, Emotion, Line, LLMProvider, Project, Prompt, Role, Strength, TTSProvider, Voice, WSEvent } from '../types';
 
@@ -107,6 +111,12 @@ export default function ProjectDetail() {
 
   const [importThirdModal, setImportThirdModal] = useState(false);
   const [thirdJsonText, setThirdJsonText] = useState('');
+
+  // ==================== 批量操作弹窗 ====================
+  const [batchLLMModalOpen, setBatchLLMModalOpen] = useState(false);
+  const [batchTTSModalOpen, setBatchTTSModalOpen] = useState(false);
+  const [showLogPanel, setShowLogPanel] = useState(false);
+  const [globalLogs, setGlobalLogs] = useState<string[]>([]);
 
   // ==================== 播放状态 ====================
   const audioRef = useRef(new Audio());
@@ -227,9 +237,51 @@ export default function ProjectDetail() {
           ),
         );
       }),
+      // 监听批量操作日志（全局日志面板）
+      subscribe('batch_llm_progress', (data: WSEvent) => {
+        if (data.project_id === projectId && data.log) {
+          setGlobalLogs((prev) => [...prev.slice(-300), `[${new Date().toLocaleTimeString()}] ${data.log as string}`]);
+        }
+      }),
+      subscribe('batch_llm_log', (data: WSEvent) => {
+        if (data.project_id === projectId && data.log) {
+          setGlobalLogs((prev) => [...prev.slice(-300), `[${new Date().toLocaleTimeString()}] ${data.log as string}`]);
+        }
+      }),
+      subscribe('batch_llm_complete', (data: WSEvent) => {
+        if (data.project_id === projectId && data.log) {
+          setGlobalLogs((prev) => [...prev.slice(-300), `[${new Date().toLocaleTimeString()}] ${data.log as string}`]);
+        }
+      }),
+      subscribe('batch_tts_start', (data: WSEvent) => {
+        if (data.project_id === projectId && data.log) {
+          setGlobalLogs((prev) => [...prev.slice(-300), `[${new Date().toLocaleTimeString()}] ${data.log as string}`]);
+        }
+      }),
+      subscribe('batch_tts_line_progress', (data: WSEvent) => {
+        if (data.project_id === projectId) {
+          if (data.log) setGlobalLogs((prev) => [...prev.slice(-300), `[${new Date().toLocaleTimeString()}] ${data.log as string}`]);
+          // 更新当前章节的台词状态
+          const lineId = data.line_id as number;
+          const status = data.status as Line['status'];
+          if (lineId) {
+            setLines((prev) => prev.map((l) => l.id === lineId ? { ...l, status } : l));
+          }
+        }
+      }),
+      subscribe('batch_tts_chapter_done', (data: WSEvent) => {
+        if (data.project_id === projectId && data.log) {
+          setGlobalLogs((prev) => [...prev.slice(-300), `[${new Date().toLocaleTimeString()}] ${data.log as string}`]);
+        }
+      }),
+      subscribe('batch_tts_complete', (data: WSEvent) => {
+        if (data.project_id === projectId && data.log) {
+          setGlobalLogs((prev) => [...prev.slice(-300), `[${new Date().toLocaleTimeString()}] ${data.log as string}`]);
+        }
+      }),
     ];
     return () => unsubs.forEach((fn) => fn());
-  }, [subscribe]);
+  }, [subscribe, projectId]);
 
   // 音频播放事件
   useEffect(() => {
@@ -746,6 +798,9 @@ export default function ProjectDetail() {
           <Button size="small" type="primary" disabled={!canGenerate(record)} onClick={() => handleGenerateOne(record)}>
             生成
           </Button>
+          {record.audio_path && record.status === 'done' && (
+            <SpeedControl lineId={record.id} type="line" size="small" onComplete={loadLines} />
+          )}
           <Button size="small" onClick={() => handleInsertBelow(record)}>插入</Button>
           <Popconfirm title="确认删除？" onConfirm={() => handleDeleteLine(record)}>
             <Button size="small" danger>删除</Button>
@@ -909,6 +964,22 @@ export default function ProjectDetail() {
                   </Button>
                   <Button
                     size="small"
+                    icon={<RobotOutlined />}
+                    style={{ background: '#6366f1', color: '#fff', borderColor: '#6366f1' }}
+                    onClick={() => setBatchLLMModalOpen(true)}
+                  >
+                    批量LLM
+                  </Button>
+                  <Button
+                    size="small"
+                    icon={<SoundOutlined />}
+                    style={{ background: '#52c41a', color: '#fff', borderColor: '#52c41a' }}
+                    onClick={() => setBatchTTSModalOpen(true)}
+                  >
+                    批量配音
+                  </Button>
+                  <Button
+                    size="small"
                     icon={<UploadOutlined />}
                     onClick={() => { setThirdJsonText(''); setImportThirdModal(true); }}
                   >
@@ -985,6 +1056,22 @@ export default function ProjectDetail() {
                           <Button size="small" type="primary" icon={<ThunderboltOutlined />} onClick={handleGenerateAll}>
                             批量生成
                           </Button>
+                          {activeChapterId && (
+                            <SpeedControl
+                              type="chapter"
+                              chapterId={activeChapterId}
+                              size="small"
+                              onComplete={loadLines}
+                            />
+                          )}
+                          <Button
+                            size="small"
+                            icon={<UnorderedListOutlined />}
+                            onClick={() => setShowLogPanel(!showLogPanel)}
+                            style={{ color: showLogPanel ? '#6366f1' : undefined }}
+                          >
+                            日志
+                          </Button>
                           <Button size="small" type="default" icon={<DownloadOutlined />} onClick={handleExport} style={{ background: '#52c41a', color: '#fff', borderColor: '#52c41a' }}>
                             导出
                           </Button>
@@ -997,9 +1084,21 @@ export default function ProjectDetail() {
                           rowKey="id"
                           size="small"
                           pagination={false}
-                          scroll={{ y: 'calc(100vh - 480px)' }}
+                          scroll={{ y: showLogPanel ? 'calc(100vh - 700px)' : 'calc(100vh - 480px)' }}
                           style={{ flex: 1 }}
                         />
+
+                        {/* 实时日志面板 */}
+                        {showLogPanel && (
+                          <div style={{ marginTop: 12 }}>
+                            <LogPanel
+                              logs={globalLogs}
+                              maxHeight={200}
+                              onClear={() => setGlobalLogs([])}
+                              title="📊 实时日志（LLM / TTS 操作）"
+                            />
+                          </div>
+                        )}
                       </div>
                     ),
                   },
@@ -1213,6 +1312,30 @@ export default function ProjectDetail() {
           {filteredVoices.length === 0 && <Empty description="无匹配音色" />}
         </div>
       </Modal>
+
+      {/* 批量 LLM 解析弹窗 */}
+      <BatchLLMModal
+        open={batchLLMModalOpen}
+        onClose={() => setBatchLLMModalOpen(false)}
+        projectId={projectId}
+        chapters={chapters}
+        onComplete={() => {
+          loadChapters();
+          loadLines();
+          loadRoles();
+        }}
+      />
+
+      {/* 批量 TTS 配音弹窗 */}
+      <BatchTTSModal
+        open={batchTTSModalOpen}
+        onClose={() => setBatchTTSModalOpen(false)}
+        projectId={projectId}
+        chapters={chapters}
+        onComplete={() => {
+          loadLines();
+        }}
+      />
 
       {/* 项目设置 */}
       <Modal title="项目设置" open={settingsModalOpen} onOk={handleSaveSettings} onCancel={() => setSettingsModalOpen(false)} destroyOnClose width={520}>
