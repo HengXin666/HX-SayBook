@@ -29,19 +29,29 @@ import os
 import numpy as np
 import soundfile as sf
 
+
 def _lock_key(path: str) -> str:
     return hashlib.md5(path.encode("utf-8")).hexdigest()
+
+
 _file_locks = defaultdict(threading.Lock)
+
+
 class LineService:
 
-    def __init__(self, repository: LineRepository,role_repository: RoleRepository,tts_provider_repository: TTSProviderRepository):
+    def __init__(
+        self,
+        repository: LineRepository,
+        role_repository: RoleRepository,
+        tts_provider_repository: TTSProviderRepository,
+    ):
         """注入 repository"""
 
         self.tts_provider_repository = tts_provider_repository
         self.role_repository = role_repository
         self.repository = repository
 
-    def create_line(self,  entity: LineEntity):
+    def create_line(self, entity: LineEntity):
         """创建新台词
         - 如果存在，抛出异常或返回错误
         - 调用 repository.create 插入数据库
@@ -57,7 +67,6 @@ class LineService:
         # 将po转化为entity
         return entity
 
-
     def get_line(self, line_id: int) -> LineEntity | None:
         """根据 ID 查询台词"""
         po = self.repository.get_by_id(line_id)
@@ -67,20 +76,21 @@ class LineService:
         res = LineEntity(**data)
         return res
 
-    def get_all_lines(self,chapter_id: int) -> Sequence[LineEntity]:
+    def get_all_lines(self, chapter_id: int) -> Sequence[LineEntity]:
         """获取所有台词列表"""
         pos = self.repository.get_all(chapter_id)
         # pos -> entities
 
         entities = [
-            LineEntity(**{k: v for k, v in po.__dict__.items() if not k.startswith("_")})
+            LineEntity(
+                **{k: v for k, v in po.__dict__.items() if not k.startswith("_")}
+            )
             for po in pos
         ]
         return entities
 
     def delete_line(self, line_id: int) -> bool:
-        """删除台词
-        """
+        """删除台词"""
         # 还要把audio_path删除
         po = self.repository.get_by_id(line_id)
         if po and po.audio_path:
@@ -88,10 +98,10 @@ class LineService:
                 os.remove(po.audio_path)
         res = self.repository.delete(line_id)
         return res
+
     # 删除章节下所有台词
     def delete_all_lines(self, chapter_id: int) -> bool:
-        """删除章节下所有台词
-        """
+        """删除章节下所有台词"""
         # 要移除所有的音频资源
         for line in self.get_all_lines(chapter_id):
             if line and line.audio_path:
@@ -100,30 +110,64 @@ class LineService:
         return self.repository.delete_all_by_chapter_id(chapter_id)
 
     # 单个台词新增
-    def add_new_line(self, line: LineCreateDTO,project_id,chapter_id,index,emotions_dict, strengths_dict,audio_path):
-    #     先判断角色是否存在
-        role = self.role_repository.get_by_name(line.role_name,project_id)
+    def add_new_line(
+        self,
+        line: LineCreateDTO,
+        project_id,
+        chapter_id,
+        index,
+        emotions_dict,
+        strengths_dict,
+        audio_path,
+    ):
+        #     先判断角色是否存在
+        role = self.role_repository.get_by_name(line.role_name, project_id)
         if role is None:
             #         新增角色
-            role = self.role_repository.create(RolePO(name=line.role_name, project_id=project_id))
+            role = self.role_repository.create(
+                RolePO(name=line.role_name, project_id=project_id)
+            )
         # 获取情绪id
         emotion_id = emotions_dict.get(line.emotion_name)
         # 获取强度id
         strength_id = strengths_dict.get(line.strength_name)
-        res = self.repository.create(LinePO(text_content=line.text_content, role_id=role.id,
-                                           chapter_id=chapter_id,line_order = index+1,emotion_id=emotion_id,strength_id=strength_id))
+        res = self.repository.create(
+            LinePO(
+                text_content=line.text_content,
+                role_id=role.id,
+                chapter_id=chapter_id,
+                line_order=index + 1,
+                emotion_id=emotion_id,
+                strength_id=strength_id,
+            )
+        )
 
         # 新增台词,这里搞个audio_path
 
         # audio_path = os.path.join(getConfigPath(), str(project_id), str(chapter_id), "audio")
         # os.makedirs(audio_path, exist_ok=True)
-        res_path = os.path.join(audio_path, "id_"+str(res.id) + ".wav")
+        res_path = os.path.join(audio_path, "id_" + str(res.id) + ".wav")
         self.repository.update(res.id, {"audio_path": res_path})
 
-
-    def update_init_lines(self, lines: list, project_id: object, chapter_id: object,emotions_dict, strengths_dict,audio_path) -> None:
+    def update_init_lines(
+        self,
+        lines: list,
+        project_id: object,
+        chapter_id: object,
+        emotions_dict,
+        strengths_dict,
+        audio_path,
+    ) -> None:
         for index, line in enumerate(lines):
-            self.add_new_line(line,project_id,chapter_id,index,emotions_dict, strengths_dict,audio_path)
+            self.add_new_line(
+                line,
+                project_id,
+                chapter_id,
+                index,
+                emotions_dict,
+                strengths_dict,
+                audio_path,
+            )
 
     # 获取章节下所有台词
 
@@ -136,14 +180,22 @@ class LineService:
         if res is None:
             return False
         return True
+
     # 生成音频（服务器和本地两种方式）
 
-    def generate_audio(self, reference_path: str,tts_provider_id,content,emo_text:str,emo_vector:list[float],save_path= None):
+    def generate_audio(
+        self,
+        reference_path: str,
+        tts_provider_id,
+        content,
+        emo_text: str,
+        emo_vector: list[float],
+        save_path=None,
+    ):
         #
         tts_provider = self.tts_provider_repository.get_by_id(tts_provider_id)
         tts_engine = TTSEngine(tts_provider.api_base_url)
         # 先判断是否存在
-
 
         # if not tts_engine.check_audio_exists(filename):
         #     # 不存在就先上传
@@ -154,9 +206,11 @@ class LineService:
 
         with lock:
             if not tts_engine.check_audio_exists(reference_path):
-                tts_engine.upload_audio(reference_path,reference_path)
+                tts_engine.upload_audio(reference_path, reference_path)
             #     添加emo_text
-            return tts_engine.synthesize(content, reference_path,emo_text, emo_vector,save_path)
+            return tts_engine.synthesize(
+                content, reference_path, emo_text, emo_vector, save_path
+            )
 
     # 将角色role_id下所有台词的role_id都置位空
     def clear_role_id(self, role_id: int):
@@ -165,9 +219,9 @@ class LineService:
         for po in pos:
             self.repository.update(po.id, {"role_id": None})
 
-    def batch_update_line_order(self,line_orders:List[LineOrderDTO]):
+    def batch_update_line_order(self, line_orders: List[LineOrderDTO]):
         for line_order in line_orders:
-            self.update_line(line_order.id,{"line_order":line_order.line_order})
+            self.update_line(line_order.id, {"line_order": line_order.line_order})
         return True
 
     def update_audio_path(self, id, dto) -> bool:
@@ -201,16 +255,16 @@ class LineService:
             return False
 
     def process_audio_ffmpeg(
-            self,
-            audio_path: str,
-            speed: float = 1.0,
-            volume: float = 1.0,
-            start_ms: int | None = None,
-            end_ms: int | None = None,
-            out_path: str | None = None,
-            keep_format: bool = True,  # 是否保持原文件采样率/声道
-            default_sr: int = 44100,
-            default_ch: int = 2
+        self,
+        audio_path: str,
+        speed: float = 1.0,
+        volume: float = 1.0,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+        out_path: str | None = None,
+        keep_format: bool = True,  # 是否保持原文件采样率/声道
+        default_sr: int = 44100,
+        default_ch: int = 2,
     ):
         """
         使用 ffmpeg 对音频进行变速 (0.5~2.0)、音量调整、可选裁剪。
@@ -233,8 +287,9 @@ class LineService:
         # 输出路径
         target_path = out_path or audio_path
         os.makedirs(os.path.dirname(target_path) or ".", exist_ok=True)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav",
-                                         dir=os.path.dirname(target_path) or ".") as tmp:
+        with tempfile.NamedTemporaryFile(
+            delete=False, suffix=".wav", dir=os.path.dirname(target_path) or "."
+        ) as tmp:
             tmp_path = tmp.name
 
         # 构建 ffmpeg 命令
@@ -248,16 +303,25 @@ class LineService:
         cmd.extend(["-i", audio_path])
         if end_ms is not None:
             cmd.extend(["-to", str(end_ms / 1000)])
-        cmd.extend([
-            "-af", ",".join(filter_chain),
-            "-ar", str(target_sr),
-            "-ac", str(target_ch),
-            "-c:a", "pcm_s16le",
-            tmp_path
-        ])
+        cmd.extend(
+            [
+                "-af",
+                ",".join(filter_chain),
+                "-ar",
+                str(target_sr),
+                "-ac",
+                str(target_ch),
+                "-c:a",
+                "pcm_s16le",
+                tmp_path,
+            ]
+        )
 
-        subprocess.run(cmd, check=True,
-                       creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+        subprocess.run(
+            cmd,
+            check=True,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
 
         # 软限幅：避免 clipping
         data, sr = sf.read(tmp_path, dtype="float32", always_2d=True)
@@ -269,20 +333,19 @@ class LineService:
         os.replace(tmp_path, target_path)
         return target_path
 
-
     # 删除区间进行拼接
     def process_audio_ffmpeg_cut(
-            self,
-            audio_path: str,
-            speed: float = 1.0,
-            volume: float = 1.0,
-            start_ms: int | None = None,
-            end_ms: int | None = None,
-            silence_sec: float = 0.0,  # 末尾静音时长，单位秒
-            out_path: str | None = None,
-            keep_format: bool = True,  # 是否保持原文件采样率/声道
-            default_sr: int = 44100,
-            default_ch: int = 2
+        self,
+        audio_path: str,
+        speed: float = 1.0,
+        volume: float = 1.0,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+        silence_sec: float = 0.0,  # 末尾静音时长，单位秒
+        out_path: str | None = None,
+        keep_format: bool = True,  # 是否保持原文件采样率/声道
+        default_sr: int = 44100,
+        default_ch: int = 2,
     ):
         """
         使用 ffmpeg 对音频进行变速 (0.5~2.0)、音量调整。
@@ -306,8 +369,9 @@ class LineService:
         # 输出路径
         target_path = out_path or audio_path
         os.makedirs(os.path.dirname(target_path) or ".", exist_ok=True)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav",
-                                         dir=os.path.dirname(target_path) or ".") as tmp:
+        with tempfile.NamedTemporaryFile(
+            delete=False, suffix=".wav", dir=os.path.dirname(target_path) or "."
+        ) as tmp:
             tmp_path = tmp.name
 
         # 构建 ffmpeg 命令
@@ -316,18 +380,28 @@ class LineService:
             if silence_sec > 0:
                 # 添加静音
                 cmd = [
-                    ffmpeg_path, "-y",
-                    "-i", audio_path,
-                    "-f", "lavfi", "-t", str(silence_sec),
-                    "-i", f"anullsrc=channel_layout={'stereo' if target_ch == 2 else 'mono'}:sample_rate={target_sr}",
+                    ffmpeg_path,
+                    "-y",
+                    "-i",
+                    audio_path,
+                    "-f",
+                    "lavfi",
+                    "-t",
+                    str(silence_sec),
+                    "-i",
+                    f"anullsrc=channel_layout={'stereo' if target_ch == 2 else 'mono'}:sample_rate={target_sr}",
                     "-filter_complex",
                     f"[0:a]atempo={speed},volume={volume}[main];"
                     f"[main][1:a]concat=n=2:v=0:a=1[out]",
-                    "-map", "[out]",
-                    "-ar", str(target_sr),
-                    "-ac", str(target_ch),
-                    "-c:a", "pcm_s16le",
-                    tmp_path
+                    "-map",
+                    "[out]",
+                    "-ar",
+                    str(target_sr),
+                    "-ac",
+                    str(target_ch),
+                    "-c:a",
+                    "pcm_s16le",
+                    tmp_path,
                 ]
             elif silence_sec < 0:
                 # 裁掉末尾 abs(silence_sec)
@@ -336,27 +410,39 @@ class LineService:
                     cut_dur = 0  # 整段裁掉
 
                 cmd = [
-                    ffmpeg_path, "-y",
-                    "-i", audio_path,
+                    ffmpeg_path,
+                    "-y",
+                    "-i",
+                    audio_path,
                     "-filter_complex",
                     f"[0:a]atempo={speed},volume={volume},atrim=0:{cut_dur}[out]",
-                    "-map", "[out]",
-                    "-ar", str(target_sr),
-                    "-ac", str(target_ch),
-                    "-c:a", "pcm_s16le",
-                    tmp_path
+                    "-map",
+                    "[out]",
+                    "-ar",
+                    str(target_sr),
+                    "-ac",
+                    str(target_ch),
+                    "-c:a",
+                    "pcm_s16le",
+                    tmp_path,
                 ]
             else:
                 # 不处理末尾
                 cmd = [
-                    ffmpeg_path, "-y", "-i", audio_path,
-                    "-af", f"atempo={speed},volume={volume}",
-                    "-ar", str(target_sr),
-                    "-ac", str(target_ch),
-                    "-c:a", "pcm_s16le",
-                    tmp_path
+                    ffmpeg_path,
+                    "-y",
+                    "-i",
+                    audio_path,
+                    "-af",
+                    f"atempo={speed},volume={volume}",
+                    "-ar",
+                    str(target_sr),
+                    "-ac",
+                    str(target_ch),
+                    "-c:a",
+                    "pcm_s16le",
+                    tmp_path,
                 ]
-
 
         else:
 
@@ -371,35 +457,30 @@ class LineService:
                 # 拼接 + 添加静音
 
                 cmd = [
-
-                    ffmpeg_path, "-y",
-
-                    "-i", audio_path,
-
-                    "-f", "lavfi", "-t", str(silence_sec),
-
-                    "-i", f"anullsrc=channel_layout={'stereo' if target_ch == 2 else 'mono'}:sample_rate={target_sr}",
-
+                    ffmpeg_path,
+                    "-y",
+                    "-i",
+                    audio_path,
+                    "-f",
+                    "lavfi",
+                    "-t",
+                    str(silence_sec),
+                    "-i",
+                    f"anullsrc=channel_layout={'stereo' if target_ch == 2 else 'mono'}:sample_rate={target_sr}",
                     "-filter_complex",
-
                     f"[0:a]atrim=0:{start_sec},asetpts=PTS-STARTPTS[first];"
-
                     f"[0:a]atrim={end_sec},asetpts=PTS-STARTPTS[second];"
-
                     f"[first][second]concat=n=2:v=0:a=1,atempo={speed},volume={volume}[main];"
-
                     f"[main][1:a]concat=n=2:v=0:a=1[out]",
-
-                    "-map", "[out]",
-
-                    "-ar", str(target_sr),
-
-                    "-ac", str(target_ch),
-
-                    "-c:a", "pcm_s16le",
-
-                    tmp_path
-
+                    "-map",
+                    "[out]",
+                    "-ar",
+                    str(target_sr),
+                    "-ac",
+                    str(target_ch),
+                    "-c:a",
+                    "pcm_s16le",
+                    tmp_path,
                 ]
 
             elif silence_sec < 0:
@@ -411,27 +492,23 @@ class LineService:
                     cut_dur = 0  # 整段裁掉
 
                 cmd = [
-
-                    ffmpeg_path, "-y", "-i", audio_path,
-
+                    ffmpeg_path,
+                    "-y",
+                    "-i",
+                    audio_path,
                     "-filter_complex",
-
                     f"[0:a]atrim=0:{start_sec},asetpts=PTS-STARTPTS[first];"
-
                     f"[0:a]atrim={end_sec},asetpts=PTS-STARTPTS[second];"
-
                     f"[first][second]concat=n=2:v=0:a=1,atempo={speed},volume={volume},atrim=0:{cut_dur}[out]",
-
-                    "-map", "[out]",
-
-                    "-ar", str(target_sr),
-
-                    "-ac", str(target_ch),
-
-                    "-c:a", "pcm_s16le",
-
-                    tmp_path
-
+                    "-map",
+                    "[out]",
+                    "-ar",
+                    str(target_sr),
+                    "-ac",
+                    str(target_ch),
+                    "-c:a",
+                    "pcm_s16le",
+                    tmp_path,
                 ]
 
             else:
@@ -439,33 +516,30 @@ class LineService:
                 # 拼接但不处理末尾
 
                 cmd = [
-
-                    ffmpeg_path, "-y", "-i", audio_path,
-
+                    ffmpeg_path,
+                    "-y",
+                    "-i",
+                    audio_path,
                     "-filter_complex",
-
                     f"[0:a]atrim=0:{start_sec},asetpts=PTS-STARTPTS[first];"
-
                     f"[0:a]atrim={end_sec},asetpts=PTS-STARTPTS[second];"
-
                     f"[first][second]concat=n=2:v=0:a=1,atempo={speed},volume={volume}[out]",
-
-                    "-map", "[out]",
-
-                    "-ar", str(target_sr),
-
-                    "-ac", str(target_ch),
-
-                    "-c:a", "pcm_s16le",
-
-                    tmp_path
-
+                    "-map",
+                    "[out]",
+                    "-ar",
+                    str(target_sr),
+                    "-ac",
+                    str(target_ch),
+                    "-c:a",
+                    "pcm_s16le",
+                    tmp_path,
                 ]
 
         # 执行 ffmpeg
         subprocess.run(
-            cmd, check=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            cmd,
+            check=True,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
 
         # 软限幅：避免 clipping
@@ -478,13 +552,13 @@ class LineService:
         os.replace(tmp_path, target_path)
         return target_path
 
-    def process_audio(self, line_id, dto:LineAudioProcessDTO):
+    def process_audio(self, line_id, dto: LineAudioProcessDTO):
         line = self.get_line(line_id)
         if line:
-        #     读取音频文件
-        #     audio_file =self.process_audio_ffmpeg(line.audio_path, dto.speed, dto.volume,dto.start_ms,dto.end_ms)
-        # 删除拼接
-        #     audio_file = self.process_audio_ffmpeg_cut(line.audio_path, dto.speed, dto.volume, dto.start_ms, dto.end_ms, dto.tail_silence_sec,dto.current_ms)
+            #     读取音频文件
+            #     audio_file =self.process_audio_ffmpeg(line.audio_path, dto.speed, dto.volume,dto.start_ms,dto.end_ms)
+            # 删除拼接
+            #     audio_file = self.process_audio_ffmpeg_cut(line.audio_path, dto.speed, dto.volume, dto.start_ms, dto.end_ms, dto.tail_silence_sec,dto.current_ms)
             processor = AudioProcessor(line.audio_path)
             start_ms = dto.start_ms
             end_ms = dto.end_ms
@@ -498,7 +572,9 @@ class LineService:
                 processor.cut(start_ms, end_ms)
 
             # ---------- (2) 插入静音 ----------
-            elif current_ms is not None and silence_sec is not None and silence_sec != 0:
+            elif (
+                current_ms is not None and silence_sec is not None and silence_sec != 0
+            ):
                 print("插入静音")
                 processor.insert_silence(current_ms, silence_sec)
 
@@ -519,7 +595,7 @@ class LineService:
             return False
 
     # 导出音频,合并音频，并且导出字幕
-    def concat_wav_files(self,paths, out_path, verify=True, block_frames=262144):
+    def concat_wav_files(self, paths, out_path, verify=True, block_frames=262144):
         """
         按顺序把若干 WAV 合并到 out_path。
         假设：采样率与声道一致（如需更稳，可保留 verify=True 做轻校验）。
@@ -537,24 +613,30 @@ class LineService:
                 info = sf.info(p)
                 if info.samplerate != sr or info.channels != ch:
                     raise ValueError(
-                        f"格式不一致：{p} (sr={info.samplerate}, ch={info.channels}) vs 首文件 (sr={sr}, ch={ch})")
+                        f"格式不一致：{p} (sr={info.samplerate}, ch={info.channels}) vs 首文件 (sr={sr}, ch={ch})"
+                    )
 
         # 流式写入
-        with sf.SoundFile(out_path, mode='w', samplerate=sr, channels=ch, format='WAV', subtype=subtype) as fout:
+        with sf.SoundFile(
+            out_path,
+            mode="w",
+            samplerate=sr,
+            channels=ch,
+            format="WAV",
+            subtype=subtype,
+        ) as fout:
             for p in paths:
-                with sf.SoundFile(p, mode='r') as fin:
+                with sf.SoundFile(p, mode="r") as fin:
                     if verify and (fin.samplerate != sr or fin.channels != ch):
                         raise ValueError(f"参数不一致：{p}")
                     while True:
-                        block = fin.read(block_frames, dtype='float32', always_2d=True)
+                        block = fin.read(block_frames, dtype="float32", always_2d=True)
                         if len(block) == 0:
                             break
                         fout.write(block.astype(np.float32, copy=False))
         return out_path
 
-
-
-    def export_lines_to_excel(self,lines, file_path="all_lines.xlsx"):
+    def export_lines_to_excel(self, lines, file_path="all_lines.xlsx"):
         # 1) 取出所有数据
         # lines = self.repository.get_all(chapter_id)
 
@@ -564,23 +646,19 @@ class LineService:
         ws.title = "Lines"
 
         # 3) 写表头（根据你的数据字段调整）
-        headers = ["序号","角色", "台词"]
+        headers = ["序号", "角色", "台词"]
         ws.append(headers)
 
         # 4) 写内容
         for line in lines:
             role = self.role_repository.get_by_id(line.role_id)
             role_name = role.name if role else "未知角色"
-            ws.append([
-                line.line_order,
-                role_name,
-                line.text_content
-            ])
+            ws.append([line.line_order, role_name, line.text_content])
         # 5) 保存到文件
         wb.save(file_path)
         return file_path
 
-    def export_audio(self, chapter_id,single=False):
+    def export_audio(self, chapter_id, single=False):
         # 拿到所有的台词
         lines = self.repository.get_all(chapter_id)
 
@@ -595,8 +673,7 @@ class LineService:
             self.concat_wav_files(paths, output_path)
             # 生成字幕
             output_subtitle_path = os.path.join(output_dir_path, "result.srt")
-            subtitle_engine.generate_subtitle(output_path,output_subtitle_path)
-
+            subtitle_engine.generate_subtitle(output_path, output_subtitle_path)
 
             if single:
                 # 生成所有的单条字幕
@@ -608,16 +685,205 @@ class LineService:
                     path = line.audio_path
                     base_name = os.path.splitext(os.path.basename(path))[0]
                     subtitle_path = os.path.join(subtitle_dir_path, base_name + ".srt")
-                    subtitle_engine.generate_subtitle(path,subtitle_path)
+                    subtitle_engine.generate_subtitle(path, subtitle_path)
                     #     将subtitle_path写进line.subtitle_path
-                    self.repository.update(line.id,{"subtitle_path":subtitle_path})
+                    self.repository.update(line.id, {"subtitle_path": subtitle_path})
             # 导出所有数据
-            self.export_lines_to_excel(lines, os.path.join(output_dir_path, "all_lines.xlsx"))
+            self.export_lines_to_excel(
+                lines, os.path.join(output_dir_path, "all_lines.xlsx")
+            )
             return True
         else:
             return False
 
+    def _get_chapter_duration(self, audio_paths: list) -> float:
+        """计算一组音频文件的总时长（秒）"""
+        total = 0.0
+        for p in audio_paths:
+            try:
+                info = sf.info(p)
+                total += info.frames / info.samplerate
+            except Exception:
+                pass
+        return total
 
+    def merge_chapters_audio(
+        self,
+        project_root_path: str,
+        project_id: int,
+        chapter_ids: list,
+        chapter_titles: dict,
+        group_size: int = 0,
+        max_duration_minutes: float = 0,
+    ) -> dict:
+        """
+        合并多个章节的音频为 MP3 文件。
+
+        参数：
+        - chapter_ids: 要合并的章节 ID 列表（已按顺序排列）
+        - chapter_titles: {chapter_id: title} 章节标题映射
+        - group_size: 每组包含的章节数，0 表示全部合并为一个文件
+        - max_duration_minutes: 每段最大时长（分钟），0 表示不限制。
+          以章节为最小单位分段，不会在章节中间截断（允许超出几十秒）。
+
+        返回：
+        - {"files": [{"name": "xxx.mp3", "path": "/static/audio/..."}], "output_dir": "..."}
+        """
+        ffmpeg_path = getFfmpegPath()
+
+        # 输出目录
+        merge_dir = os.path.join(project_root_path, str(project_id), "merged_audio")
+        os.makedirs(merge_dir, exist_ok=True)
+
+        # 收集每个章节的音频路径列表及时长
+        chapter_audio_map = {}  # {chapter_id: [audio_path, ...]}
+        chapter_duration_map = {}  # {chapter_id: duration_seconds}
+        for cid in chapter_ids:
+            lines = self.repository.get_all(cid)
+            paths = [
+                line.audio_path
+                for line in lines
+                if line.audio_path and os.path.exists(line.audio_path)
+            ]
+            if paths:
+                chapter_audio_map[cid] = paths
+                chapter_duration_map[cid] = self._get_chapter_duration(paths)
+
+        if not chapter_audio_map:
+            return {
+                "files": [],
+                "output_dir": merge_dir,
+                "message": "没有找到可合并的音频文件",
+            }
+
+        # 按时长分段（优先级高于 group_size）
+        if max_duration_minutes > 0:
+            max_seconds = max_duration_minutes * 60
+            groups = []
+            current_group = []
+            current_duration = 0.0
+            for cid in chapter_ids:
+                if cid not in chapter_audio_map:
+                    continue
+                ch_dur = chapter_duration_map.get(cid, 0)
+                # 如果当前组为空，无论时长都加入（至少包含一个章节）
+                if not current_group:
+                    current_group.append(cid)
+                    current_duration = ch_dur
+                elif current_duration + ch_dur > max_seconds:
+                    # 超过时长阈值，当前组结束，开始新组
+                    groups.append(current_group)
+                    current_group = [cid]
+                    current_duration = ch_dur
+                else:
+                    current_group.append(cid)
+                    current_duration += ch_dur
+            if current_group:
+                groups.append(current_group)
+        elif group_size <= 0:
+            # 全部合并为一个文件
+            groups = [chapter_ids]
+        else:
+            groups = [
+                chapter_ids[i : i + group_size]
+                for i in range(0, len(chapter_ids), group_size)
+            ]
+
+        result_files = []
+        for group_idx, group in enumerate(groups):
+            # 收集该组所有音频路径
+            all_paths = []
+            group_chapter_names = []
+            for cid in group:
+                if cid in chapter_audio_map:
+                    all_paths.extend(chapter_audio_map[cid])
+                    group_chapter_names.append(chapter_titles.get(cid, str(cid)))
+
+            if not all_paths:
+                continue
+
+            # 生成文件名
+            if len(groups) == 1:
+                if len(group_chapter_names) == 1:
+                    mp3_name = f"{group_chapter_names[0]}.mp3"
+                else:
+                    mp3_name = f"{group_chapter_names[0]}-{group_chapter_names[-1]}.mp3"
+            else:
+                mp3_name = f"合并_{group_idx + 1}_{group_chapter_names[0]}-{group_chapter_names[-1]}.mp3"
+
+            # 安全文件名：替换不安全字符
+            safe_name = "".join(
+                c if c.isalnum() or c in "-_. " else "_" for c in mp3_name
+            )
+            if not safe_name.endswith(".mp3"):
+                safe_name += ".mp3"
+
+            # 先合并为临时 WAV
+            temp_wav = os.path.join(merge_dir, f"_temp_{group_idx}.wav")
+            try:
+                self.concat_wav_files(all_paths, temp_wav)
+            except Exception as e:
+                print(f"[merge] 合并WAV失败: {e}")
+                continue
+
+            # WAV 转 MP3
+            mp3_path = os.path.join(merge_dir, safe_name)
+            try:
+                cmd = [
+                    ffmpeg_path,
+                    "-y",
+                    "-i",
+                    temp_wav,
+                    "-codec:a",
+                    "libmp3lame",
+                    "-qscale:a",
+                    "2",
+                    mp3_path,
+                ]
+                subprocess.run(
+                    cmd,
+                    check=True,
+                    creationflags=(
+                        subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+                    ),
+                )
+            except Exception as e:
+                print(f"[merge] WAV转MP3失败: {e}")
+                continue
+            finally:
+                # 清理临时 WAV
+                if os.path.exists(temp_wav):
+                    os.remove(temp_wav)
+
+            # 构建静态访问路径
+            relative_path = os.path.relpath(mp3_path, project_root_path)
+            static_url = f"/static/audio/{relative_path}"
+
+            # 计算该段总时长
+            group_duration = sum(
+                chapter_duration_map.get(cid, 0)
+                for cid in group
+                if cid in chapter_audio_map
+            )
+            duration_min = int(group_duration // 60)
+            duration_sec = int(group_duration % 60)
+
+            result_files.append(
+                {
+                    "name": safe_name,
+                    "url": static_url,
+                    "path": mp3_path,
+                    "chapters": group_chapter_names,
+                    "duration": f"{duration_min}分{duration_sec:02d}秒",
+                    "duration_seconds": round(group_duration, 1),
+                }
+            )
+
+        return {
+            "files": result_files,
+            "output_dir": merge_dir,
+            "total_chapters": len(chapter_audio_map),
+        }
 
     def generate_subtitle(self, line_id, dto):
         # 获取台词
@@ -625,13 +891,15 @@ class LineService:
         if line:
             # 将音频文件路径的后缀改为.srt
             dto.subtitle_path = os.path.splitext(dto.subtitle_path)[0] + ".srt"
-            subtitle_engine.generate_subtitle(line.audio_path,dto.subtitle_path)
+            subtitle_engine.generate_subtitle(line.audio_path, dto.subtitle_path)
             return dto.subtitle_path
         else:
             return None
-#     字幕矫正
+
+    #     字幕矫正
     def correct_subtitle(self, text, output_subtitle_path):
         subtitle_engine.correct_srt_file(text, output_subtitle_path)
+
 
 #     生成字幕
 #     def generate_subtitle(self, res_path):

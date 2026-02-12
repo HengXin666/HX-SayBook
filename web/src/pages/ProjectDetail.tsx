@@ -3,6 +3,7 @@ import {
   DeleteOutlined,
   DownloadOutlined,
   EditOutlined,
+  MergeCellsOutlined,
   PauseCircleOutlined,
   PlayCircleOutlined,
   PlusOutlined,
@@ -18,16 +19,19 @@ import {
   Avatar,
   Button,
   Card,
+  Checkbox,
   Col,
   Divider,
   Empty,
   Form,
   Input,
+  InputNumber,
   Layout,
   message,
   Modal,
   Popconfirm,
   Progress,
+  Radio,
   Row,
   Select,
   Space,
@@ -114,6 +118,15 @@ export default function ProjectDetail() {
   // ==================== 批量操作弹窗 ====================
   const [batchLLMModalOpen, setBatchLLMModalOpen] = useState(false);
   const [batchTTSModalOpen, setBatchTTSModalOpen] = useState(false);
+
+  // ==================== 合并导出弹窗 ====================
+  const [mergeModalOpen, setMergeModalOpen] = useState(false);
+  const [mergeSelectedChapters, setMergeSelectedChapters] = useState<number[]>([]);
+  const [mergeMode, setMergeMode] = useState<'all' | 'group' | 'duration'>('all');
+  const [mergeGroupSize, setMergeGroupSize] = useState(1);
+  const [mergeDurationMinutes, setMergeDurationMinutes] = useState(30);
+  const [mergeLoading, setMergeLoading] = useState(false);
+  const [mergeResults, setMergeResults] = useState<{ name: string; url: string; chapters: string[]; duration?: string }[] | null>(null);
 
 
   // ==================== 播放状态 ====================
@@ -646,6 +659,64 @@ export default function ProjectDetail() {
     }
   };
 
+  // ==================== 合并导出 ====================
+  const openMergeModal = () => {
+    setMergeSelectedChapters([]);
+    setMergeMode('all');
+    setMergeGroupSize(1);
+    setMergeDurationMinutes(30);
+    setMergeResults(null);
+    setMergeModalOpen(true);
+  };
+
+  const handleMergeExport = async () => {
+    if (mergeSelectedChapters.length === 0) {
+      message.warning('请选择要合并的章节');
+      return;
+    }
+    setMergeLoading(true);
+    setMergeResults(null);
+    try {
+      const res = await lineApi.mergeExport({
+        project_id: projectId,
+        chapter_ids: mergeSelectedChapters,
+        group_size: mergeMode === 'group' ? mergeGroupSize : 0,
+        max_duration_minutes: mergeMode === 'duration' ? mergeDurationMinutes : 0,
+      });
+      if (res.code === 200 && res.data) {
+        const data = res.data as { files: { name: string; url: string; chapters: string[]; duration?: string }[] };
+        setMergeResults(data.files);
+        message.success(res.message || '合并完成');
+      } else {
+        message.error(res.message || '合并失败');
+      }
+    } catch {
+      message.error('合并导出请求失败');
+    } finally {
+      setMergeLoading(false);
+    }
+  };
+
+  const handleMergeSelectAll = (checked: boolean) => {
+    if (checked) {
+      setMergeSelectedChapters(chapters.map(c => c.id));
+    } else {
+      setMergeSelectedChapters([]);
+    }
+  };
+
+  const handleMergeChapterToggle = (chapterId: number, checked: boolean) => {
+    if (checked) {
+      setMergeSelectedChapters(prev => [...prev, chapterId].sort((a, b) => {
+        const idxA = chapters.findIndex(c => c.id === a);
+        const idxB = chapters.findIndex(c => c.id === b);
+        return idxA - idxB;
+      }));
+    } else {
+      setMergeSelectedChapters(prev => prev.filter(id => id !== chapterId));
+    }
+  };
+
   // ==================== 台词表格列 ====================
   const statusType = (s: string) => {
     const map: Record<string, string> = { done: 'success', processing: 'processing', failed: 'error', pending: 'default' };
@@ -956,6 +1027,14 @@ export default function ProjectDetail() {
                     onClick={() => { setThirdJsonText(''); setImportThirdModal(true); }}
                   >
                     导入JSON
+                  </Button>
+                  <Button
+                    size="small"
+                    icon={<MergeCellsOutlined />}
+                    style={{ background: '#fa8c16', color: '#fff', borderColor: '#fa8c16' }}
+                    onClick={openMergeModal}
+                  >
+                    合并导出
                   </Button>
                   <Button size="small" icon={<SettingOutlined />} onClick={openProjectSettings}>
                     设置
@@ -1288,6 +1367,141 @@ export default function ProjectDetail() {
           loadLines();
         }}
       />
+
+      {/* 合并导出弹窗 */}
+      <Modal
+        title="合并导出 MP3"
+        open={mergeModalOpen}
+        onCancel={() => setMergeModalOpen(false)}
+        width={640}
+        footer={
+          mergeResults ? [
+            <Button key="close" onClick={() => setMergeModalOpen(false)}>关闭</Button>,
+          ] : [
+            <Button key="cancel" onClick={() => setMergeModalOpen(false)}>取消</Button>,
+            <Button key="ok" type="primary" loading={mergeLoading} onClick={handleMergeExport}>
+              开始合并
+            </Button>,
+          ]
+        }
+        destroyOnClose
+      >
+        {mergeResults ? (
+          <div>
+            <Typography.Text type="success" strong>合并完成！共生成 {mergeResults.length} 个文件：</Typography.Text>
+            <div style={{ marginTop: 12 }}>
+              {mergeResults.map((file, idx) => (
+                <Card key={idx} size="small" style={{ marginBottom: 8 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <Typography.Text strong>{file.name}</Typography.Text>
+                      {file.duration && (
+                        <Tag color="blue" style={{ marginLeft: 8 }}>{file.duration}</Tag>
+                      )}
+                      <br />
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        包含章节：{file.chapters.join('、')}
+                      </Typography.Text>
+                    </div>
+                    <Button
+                      type="primary"
+                      size="small"
+                      icon={<DownloadOutlined />}
+                      href={file.url}
+                      target="_blank"
+                    >
+                      下载
+                    </Button>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div>
+            {/* 章节选择 */}
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <Typography.Text strong>选择章节：</Typography.Text>
+                <Checkbox
+                  checked={mergeSelectedChapters.length === chapters.length && chapters.length > 0}
+                  indeterminate={mergeSelectedChapters.length > 0 && mergeSelectedChapters.length < chapters.length}
+                  onChange={(e) => handleMergeSelectAll(e.target.checked)}
+                >
+                  全选
+                </Checkbox>
+              </div>
+              <div style={{ maxHeight: 240, overflowY: 'auto', border: '1px solid #d9d9d9', borderRadius: 6, padding: 8 }}>
+                {chapters.map((ch) => (
+                  <div key={ch.id} style={{ padding: '4px 0' }}>
+                    <Checkbox
+                      checked={mergeSelectedChapters.includes(ch.id)}
+                      onChange={(e) => handleMergeChapterToggle(ch.id, e.target.checked)}
+                    >
+                      {ch.title}
+                    </Checkbox>
+                  </div>
+                ))}
+                {chapters.length === 0 && <Empty description="暂无章节" image={Empty.PRESENTED_IMAGE_SIMPLE} />}
+              </div>
+              <Typography.Text type="secondary" style={{ fontSize: 12, marginTop: 4, display: 'block' }}>
+                已选 {mergeSelectedChapters.length} / {chapters.length} 章
+              </Typography.Text>
+            </div>
+
+            {/* 合并模式 */}
+            <div style={{ marginBottom: 16 }}>
+              <Typography.Text strong style={{ display: 'block', marginBottom: 8 }}>合并模式：</Typography.Text>
+              <Radio.Group value={mergeMode} onChange={(e) => setMergeMode(e.target.value)}>
+                <Radio value="all">全部合并为一个 MP3</Radio>
+                <Radio value="group">
+                  每
+                  <InputNumber
+                    min={1}
+                    max={mergeSelectedChapters.length || 1}
+                    value={mergeGroupSize}
+                    onChange={(val) => setMergeGroupSize(val || 1)}
+                    size="small"
+                    style={{ width: 60, margin: '0 6px' }}
+                    disabled={mergeMode !== 'group'}
+                  />
+                  章为一个 MP3
+                </Radio>
+                <Radio value="duration" style={{ marginTop: 8 }}>
+                  每
+                  <InputNumber
+                    min={5}
+                    max={180}
+                    value={mergeDurationMinutes}
+                    onChange={(val) => setMergeDurationMinutes(val || 30)}
+                    size="small"
+                    style={{ width: 70, margin: '0 6px' }}
+                    disabled={mergeMode !== 'duration'}
+                  />
+                  分钟为一段
+                  <Typography.Text type="secondary" style={{ fontSize: 11, marginLeft: 4 }}>
+                    (以章节为界，不截断对话)
+                  </Typography.Text>
+                </Radio>
+              </Radio.Group>
+            </div>
+
+            {/* 预览 */}
+            {mergeSelectedChapters.length > 0 && (
+              <div>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {mergeMode === 'all'
+                    ? `将合并 ${mergeSelectedChapters.length} 个章节为 1 个 MP3 文件`
+                    : mergeMode === 'group'
+                    ? `将合并 ${mergeSelectedChapters.length} 个章节为 ${Math.ceil(mergeSelectedChapters.length / mergeGroupSize)} 个 MP3 文件`
+                    : `将按 ${mergeDurationMinutes} 分钟为一段自动分割（章节不截断，允许略超时长）`
+                  }
+                </Typography.Text>
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
 
       {/* 项目设置 */}
       <Modal title="项目设置" open={settingsModalOpen} onOk={handleSaveSettings} onCancel={() => setSettingsModalOpen(false)} destroyOnClose width={520}>

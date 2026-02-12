@@ -10,7 +10,12 @@ from py.core.config import getConfigPath
 from py.core.response import Res
 from py.core.ws_manager import manager
 from py.db.database import get_db, SessionLocal
-from py.dto.line_dto import LineResponseDTO, LineCreateDTO, LineOrderDTO, LineAudioProcessDTO
+from py.dto.line_dto import (
+    LineResponseDTO,
+    LineCreateDTO,
+    LineOrderDTO,
+    LineAudioProcessDTO,
+)
 from py.entity.line_entity import LineEntity
 from py.repositories.chapter_repository import ChapterRepository
 from py.repositories.llm_provider_repository import LLMProviderRepository
@@ -31,33 +36,48 @@ router = APIRouter(prefix="/lines", tags=["Lines"])
 
 # 依赖注入（实际项目可用 DI 容器）
 
+
 def get_line_service(db: Session = Depends(get_db)) -> LineService:
     repository = LineRepository(db)
     role_repository = RoleRepository(db)
     tts_repository = TTSProviderRepository(db)
-    return LineService(repository,role_repository,tts_repository)
+    return LineService(repository, role_repository, tts_repository)
+
+
 def get_project_service(db: Session = Depends(get_db)) -> ProjectService:
     repository = ProjectRepository(db)
     return ProjectService(repository)
 
+
 def get_chapter_service(db: Session = Depends(get_db)) -> ChapterService:
     repository = ChapterRepository(db)
     return ChapterService(repository)
+
 
 def get_voice_service(db: Session = Depends(get_db)) -> VoiceService:
     repository = VoiceRepository(db)
     multi_emotion_voice_repository = MultiEmotionVoiceRepository(db)
     return VoiceService(repository, multi_emotion_voice_repository)
 
+
 def get_role_service(db: Session = Depends(get_db)) -> RoleService:
     repository = RoleRepository(db)
     return RoleService(repository)
-@router.post("/{project_id}", response_model=Res[LineResponseDTO],
-             summary="创建台词",
-             description="根据项目ID创建台词" )
-def create_line(project_id:int,dto: LineCreateDTO, line_service: LineService = Depends(get_line_service),
-                   project_service: ProjectService = Depends(get_project_service),
-                    chapter_service : ChapterService = Depends(get_chapter_service)):
+
+
+@router.post(
+    "/{project_id}",
+    response_model=Res[LineResponseDTO],
+    summary="创建台词",
+    description="根据项目ID创建台词",
+)
+def create_line(
+    project_id: int,
+    dto: LineCreateDTO,
+    line_service: LineService = Depends(get_line_service),
+    project_service: ProjectService = Depends(get_project_service),
+    chapter_service: ChapterService = Depends(get_chapter_service),
+):
     """创建台词"""
     try:
         # DTO → Entity
@@ -75,7 +95,9 @@ def create_line(project_id:int,dto: LineCreateDTO, line_service: LineService = D
         entityRes = line_service.create_line(entity)
 
         # 新增台词,这里搞个audio_path
-        audio_path = os.path.join(project.project_root_path, str(project_id), str(dto.chapter_id), "audio")
+        audio_path = os.path.join(
+            project.project_root_path, str(project_id), str(dto.chapter_id), "audio"
+        )
         os.makedirs(audio_path, exist_ok=True)
         res_path = os.path.join(audio_path, "id_" + str(entityRes.id) + ".wav")
         line_service.update_line(entityRes.id, {"audio_path": res_path})
@@ -91,9 +113,13 @@ def create_line(project_id:int,dto: LineCreateDTO, line_service: LineService = D
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.get("/{line_id}", response_model=Res[LineResponseDTO],
-            summary="查询台词",
-            description="根据台词id查询台词信息")
+
+@router.get(
+    "/{line_id}",
+    response_model=Res[LineResponseDTO],
+    summary="查询台词",
+    description="根据台词id查询台词信息",
+)
 def get_line(line_id: int, line_service: LineService = Depends(get_line_service)):
     entity = line_service.get_line(line_id)
     if entity:
@@ -102,10 +128,16 @@ def get_line(line_id: int, line_service: LineService = Depends(get_line_service)
     else:
         return Res(data=None, code=404, message="项目不存在")
 
-@router.get("/lines/{chapter_id}", response_model=Res[List[LineResponseDTO]],
-            summary="查询章节下的所有台词",
-            description="根据章节id查询章节下的所有台词信息")
-def get_all_lines(chapter_id: int, line_service: LineService = Depends(get_line_service)):
+
+@router.get(
+    "/lines/{chapter_id}",
+    response_model=Res[List[LineResponseDTO]],
+    summary="查询章节下的所有台词",
+    description="根据章节id查询章节下的所有台词信息",
+)
+def get_all_lines(
+    chapter_id: int, line_service: LineService = Depends(get_line_service)
+):
     entities = line_service.get_all_lines(chapter_id)
     if entities:
         res = [LineResponseDTO(**e.__dict__) for e in entities]
@@ -113,11 +145,19 @@ def get_all_lines(chapter_id: int, line_service: LineService = Depends(get_line_
     else:
         return Res(data=[], code=200, message="章节不存在台词")
 
+
 # 修改，传入的参数是id
-@router.put("/{line_id}", response_model=Res[LineCreateDTO],
-            summary="修改台词信息",
-            description="根据台词id修改台词信息,并且不能修改章节id")
-def update_line(line_id: int, dto: LineCreateDTO, line_service: LineService = Depends(get_line_service)):
+@router.put(
+    "/{line_id}",
+    response_model=Res[LineCreateDTO],
+    summary="修改台词信息",
+    description="根据台词id修改台词信息,并且不能修改章节id",
+)
+def update_line(
+    line_id: int,
+    dto: LineCreateDTO,
+    line_service: LineService = Depends(get_line_service),
+):
     line = line_service.get_line(line_id)
     if line is None:
         return Res(data=None, code=404, message="台词不存在")
@@ -129,9 +169,12 @@ def update_line(line_id: int, dto: LineCreateDTO, line_service: LineService = De
 
 
 # 根据id，删除
-@router.delete("/{line_id}", response_model=Res,
-               summary="删除台词",
-               description="根据台词id删除台词信息")
+@router.delete(
+    "/{line_id}",
+    response_model=Res,
+    summary="删除台词",
+    description="根据台词id删除台词信息",
+)
 def delete_line(line_id: int, line_service: LineService = Depends(get_line_service)):
     success = line_service.delete_line(line_id)
     if success:
@@ -139,17 +182,22 @@ def delete_line(line_id: int, line_service: LineService = Depends(get_line_servi
     else:
         return Res(data=None, code=400, message="删除失败或台词不存在")
 
+
 # 删除章节下所有台词
-@router.delete("/lines/{chapter_id}", response_model=Res,summary="删除章节下所有台词",description="根据章节id删除章节下的所有台词信息")
-def delete_all_lines(chapter_id: int, line_service: LineService = Depends(get_line_service)):
+@router.delete(
+    "/lines/{chapter_id}",
+    response_model=Res,
+    summary="删除章节下所有台词",
+    description="根据章节id删除章节下的所有台词信息",
+)
+def delete_all_lines(
+    chapter_id: int, line_service: LineService = Depends(get_line_service)
+):
     success = line_service.delete_all_lines(chapter_id)
     if success:
         return Res(data=None, code=200, message="删除成功")
     else:
         return Res(data=None, code=400, message="删除失败或台词不存在")
-
-
-
 
 
 @router.put("/batch/orders", response_model=Res[bool])
@@ -160,22 +208,27 @@ def batch_update_line_order(
     res = line_service.batch_update_line_order(line_orders)
     return Res(data=res, code=200, message="更新成功")
 
+
 # 完成配音时候，更新音频路径，保证顺序一致
 @router.put("/{line_id}/audio_path", response_model=Res[bool])
 def update_line_audio_path(
-        line_id: int,
+    line_id: int,
     dto: LineCreateDTO,  # 关键：明确从 body 读取“数组”
     line_service: LineService = Depends(get_line_service),
 ):
-    res = line_service.update_audio_path(line_id,dto)
+    res = line_service.update_audio_path(line_id, dto)
     if not res:
         return Res(data=None, code=400, message="更新失败")
     return Res(data=res, code=200, message="更新成功")
 
 
-
 @router.post("/generate-audio/{project_id}/{chapter_id}")
-def generate_audio(request: Request, project_id: int, dto: LineCreateDTO,line_service: LineService = Depends(get_line_service)):
+def generate_audio(
+    request: Request,
+    project_id: int,
+    dto: LineCreateDTO,
+    line_service: LineService = Depends(get_line_service),
+):
     q = request.app.state.tts_queue  # 👈 永远拿到已初始化的同一份队列
     if q.full():
         # 可选：带上 Retry-After 头
@@ -275,19 +328,27 @@ def generate_audio(request: Request, project_id: int, dto: LineCreateDTO,line_se
 #
 # # 批量更新line_order
 
+
 # 处理音频文件，传入倍速，音量大小，以及line_id
 @router.post("/process-audio/{line_id}")
-async def process_audio(line_id: int, dto: LineAudioProcessDTO, line_service: LineService = Depends(get_line_service)):
-    res = line_service.process_audio(line_id,dto)
+async def process_audio(
+    line_id: int,
+    dto: LineAudioProcessDTO,
+    line_service: LineService = Depends(get_line_service),
+):
+    res = line_service.process_audio(line_id, dto)
     if not res:
         return Res(data=None, code=400, message="处理失败")
     return Res(data=res, code=200, message="处理成功")
 
+
 # 导出音频与字幕
 @router.get("/export-audio/{chapter_id}")
-async def export_audio(chapter_id: int,
-                       single: bool = Query(False, description="是否导出单条音频字幕"),
-                       line_service: LineService = Depends(get_line_service)):
+async def export_audio(
+    chapter_id: int,
+    single: bool = Query(False, description="是否导出单条音频字幕"),
+    line_service: LineService = Depends(get_line_service),
+):
     res = line_service.export_audio(chapter_id, single)
     if not res:
         return Res(data=None, code=400, message="导出失败")
@@ -297,9 +358,12 @@ async def export_audio(chapter_id: int,
 # 生成单条音频的字幕（已经有音频）
 #
 
+
 # 矫正字幕
 @router.post("/correct-subtitle/{chapter_id}")
-async def correct_subtitle(chapter_id: int, line_service: LineService = Depends(get_line_service)):
+async def correct_subtitle(
+    chapter_id: int, line_service: LineService = Depends(get_line_service)
+):
     # res = line_service.correct_subtitle(chapter_id)
 
     lines = line_service.get_all_lines(chapter_id)
@@ -326,8 +390,83 @@ async def correct_subtitle(chapter_id: int, line_service: LineService = Depends(
     for line in lines:
         subtitle_path = line.subtitle_path
         line_text = line.text_content
-        if subtitle_path is not None and line_text is not None and os.path.exists(subtitle_path):
+        if (
+            subtitle_path is not None
+            and line_text is not None
+            and os.path.exists(subtitle_path)
+        ):
             line_service.correct_subtitle(line_text, subtitle_path)
             print(f"单条字幕矫正完成：{line.id}")
     return Res(data=None, code=200, message="生成成功")
 
+
+# 合并多章节音频为 MP3 导出
+from pydantic import BaseModel
+
+
+class MergeExportRequest(BaseModel):
+    """合并导出请求"""
+
+    project_id: int
+    chapter_ids: List[int]  # 要合并的章节ID列表
+    group_size: int = 0  # 每组章节数，0表示全部合并为一个文件
+    max_duration_minutes: float = 0  # 每段最大时长（分钟），0表示不限制
+
+
+@router.post("/merge-export", response_model=Res)
+async def merge_export_audio(
+    req: MergeExportRequest,
+    line_service: LineService = Depends(get_line_service),
+    project_service: ProjectService = Depends(get_project_service),
+    chapter_service: ChapterService = Depends(get_chapter_service),
+):
+    """
+    合并多章节音频为 MP3 文件。
+    - group_size=0: 所有章节合并为一个MP3
+    - group_size=N: 每N个章节合并为一个MP3
+    - max_duration_minutes>0: 按时长分段，以章节为最小单位（不在章节中间截断）
+    """
+    project = project_service.get_project(req.project_id)
+    if not project:
+        return Res(data=None, code=400, message="项目不存在")
+
+    if not req.chapter_ids:
+        return Res(data=None, code=400, message="请选择要合并的章节")
+
+    # 获取章节标题映射
+    chapter_titles = {}
+    for cid in req.chapter_ids:
+        ch = chapter_service.get_chapter(cid)
+        if ch:
+            chapter_titles[cid] = ch.title
+
+    project_root_path = project.project_root_path or getConfigPath()
+
+    try:
+        result = line_service.merge_chapters_audio(
+            project_root_path=project_root_path,
+            project_id=req.project_id,
+            chapter_ids=req.chapter_ids,
+            chapter_titles=chapter_titles,
+            group_size=req.group_size,
+            max_duration_minutes=req.max_duration_minutes,
+        )
+
+        if not result["files"]:
+            return Res(
+                data=None,
+                code=400,
+                message=result.get("message", "没有找到可合并的音频文件"),
+            )
+
+        return Res(
+            data=result,
+            code=200,
+            message=f"合并完成，共生成 {len(result['files'])} 个文件",
+        )
+
+    except Exception as e:
+        import traceback
+
+        traceback.print_exc()
+        return Res(data=None, code=500, message=f"合并失败: {str(e)}")
