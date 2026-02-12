@@ -80,10 +80,70 @@ npm run dev
 
 ### 3. (可选) 安装 Index-TTS
 
+Index-TTS 是一个高质量零样本语音克隆模型，支持多情绪合成。安装后可作为 TTS 服务供 HX-SayBook 调用。
+
+#### 3.1 一键安装
+
 ```bash
 chmod +x scripts/install_index_tts.sh
 ./scripts/install_index_tts.sh
 ```
+
+脚本会自动完成：克隆仓库 → 检测 GPU/CPU → 安装依赖 → 下载模型 → 创建启动脚本
+
+> ⚠️ **无 NVIDIA GPU** 时会自动安装 CPU 版 PyTorch，功能完整但推理较慢
+
+#### 3.2 下载模型（如脚本未自动完成）
+
+模型文件需放在 `scripts/index-tts/checkpoints/` 目录下：
+
+| 文件 | 说明 |
+|------|------|
+| `bpe.model` | BPE 分词模型 |
+| `gpt.pth` | GPT 语言模型 |
+| `config.yaml` | 模型配置（已自带） |
+| `s2mel.pth` | 声学模型 |
+| `wav2vec2bert_stats.pt` | 特征提取统计 |
+| `feat1.pt` | 说话人特征矩阵 |
+| `feat2.pt` | 情感特征矩阵 |
+| `qwen0.6bemo4-merge/` | Qwen 情感编码模型 |
+
+下载方式（三选一）：
+
+```bash
+# 方式1: ModelScope（国内推荐）
+pip install modelscope
+modelscope download --model IndexTeam/IndexTTS-2 --local_dir scripts/index-tts/checkpoints
+
+# 方式2: HuggingFace 镜像站
+pip install huggingface_hub[cli]
+HF_ENDPOINT=https://hf-mirror.com hf download IndexTeam/IndexTTS-2 --local-dir scripts/index-tts/checkpoints
+
+# 方式3: HuggingFace 官方
+pip install huggingface_hub[cli]
+hf download IndexTeam/IndexTTS-2 --local-dir scripts/index-tts/checkpoints
+```
+
+#### 3.3 启动 TTS API 服务
+
+```bash
+cd scripts/index-tts
+./start_tts_server.sh
+
+# 或手动启动
+source .venv/bin/activate  # 或 source venv/bin/activate
+python api_server.py --host 0.0.0.0 --port 8000
+```
+
+启动成功后，API 服务运行在 `http://127.0.0.1:8000`
+
+#### 3.4 对接 HX-SayBook
+
+1. 启动 HX-SayBook 后端（`./start.sh`）
+2. 打开前端，进入 **配置中心**
+3. 找到 TTS 供应商 `index_tts`（系统自动创建）
+4. 填入 API 地址：`http://127.0.0.1:8000`
+5. 点击 **测试连接**，显示成功即可
 
 ## 📖 使用流程
 
@@ -101,7 +161,7 @@ chmod +x scripts/install_index_tts.sh
 - Python 3.10+
 - Node.js 18+
 - ffmpeg(系统 PATH 中或放到 `py/core/ffmpeg/` 下)
-- (可选) NVIDIA GPU + CUDA(Index-TTS 需要)
+- (可选) NVIDIA GPU + CUDA（Index-TTS GPU 加速需要，CPU 模式也可用）
 
 ## 📝 License
 

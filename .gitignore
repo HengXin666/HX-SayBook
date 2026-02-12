@@ -42,3 +42,7 @@ Thumbs.db
 # uv
 .python-version
 uv.lock
+
+# Index-TTS（安装脚本克隆的仓库，体积大不需要入库）
+# 整个目录由 install_index_tts.sh 安装脚本管理
+scripts/index-tts/
