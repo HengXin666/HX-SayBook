@@ -219,6 +219,11 @@ class LineService:
         for po in pos:
             self.repository.update(po.id, {"role_id": None})
 
+    def get_line_count_by_role(self, role_id: int) -> int:
+        """获取指定角色的台词数量"""
+        pos = self.repository.get_lines_by_role_id(role_id)
+        return len(pos)
+
     def batch_update_line_order(self, line_orders: List[LineOrderDTO]):
         for line_order in line_orders:
             self.update_line(line_order.id, {"line_order": line_order.line_order})

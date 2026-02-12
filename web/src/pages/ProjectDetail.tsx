@@ -77,6 +77,8 @@ export default function ProjectDetail() {
   // ==================== 角色数据 ====================
   const [roles, setRoles] = useState<Role[]>([]);
   const [roleKeyword, setRoleKeyword] = useState('');
+  const [roleLineCounts, setRoleLineCounts] = useState<Record<number, number>>({});
+  const [roleSortByLines, setRoleSortByLines] = useState(false);
 
   // ==================== 音色数据 ====================
   const [voices, setVoices] = useState<Voice[]>([]);
@@ -161,8 +163,12 @@ export default function ProjectDetail() {
 
   const displayedRoles = useMemo(() => {
     const kw = roleKeyword.trim().toLowerCase();
-    return roles.filter((r) => r.name.toLowerCase().includes(kw));
-  }, [roles, roleKeyword]);
+    let filtered = roles.filter((r) => r.name.toLowerCase().includes(kw));
+    if (roleSortByLines) {
+      filtered = [...filtered].sort((a, b) => (roleLineCounts[b.id] || 0) - (roleLineCounts[a.id] || 0));
+    }
+    return filtered;
+  }, [roles, roleKeyword, roleSortByLines, roleLineCounts]);
 
   const filteredVoices = useMemo(() => {
     const kw = voiceSearchName.trim().toLowerCase();
@@ -205,6 +211,13 @@ export default function ProjectDetail() {
       setRoleVoiceMap(map);
     } else {
       setRoles([]);
+    }
+    // 加载角色对话次数
+    const sortedRes = await roleApi.getSortedByLines(projectId);
+    if (sortedRes.data) {
+      const counts: Record<number, number> = {};
+      sortedRes.data.forEach((r) => { counts[r.id] = r.line_count; });
+      setRoleLineCounts(counts);
     }
   }, [projectId]);
 
@@ -626,6 +639,7 @@ export default function ProjectDetail() {
       tts_provider_id: project.tts_provider_id,
       prompt_id: project.prompt_id,
       is_precise_fill: project.is_precise_fill,
+      passerby_voice_pool: project.passerby_voice_pool || [],
     });
     setSettingsModalOpen(true);
   };
@@ -1183,8 +1197,33 @@ export default function ProjectDetail() {
                               }
                             }}
                           >
-                            🤖 智能匹配音色
+                          🤖 智能匹配音色
                           </Button>
+                          <Button
+                            size="small"
+                            style={{ background: '#722ed1', color: '#fff', borderColor: '#722ed1' }}
+                            onClick={async () => {
+                              const hide = message.loading('随机分配路人语音中...', 0);
+                              try {
+                                const res = await roleApi.assignPasserbyVoices(projectId);
+                                if (res.code === 200) {
+                                  message.success(res.message || '分配完成');
+                                  loadRoles();
+                                  loadLines();
+                                } else {
+                                  message.warning(res.message || '分配失败');
+                                }
+                              } finally {
+                                hide();
+                              }
+                            }}
+                          >
+                            🎲 路人语音池随机分配
+                          </Button>
+                          <Divider type="vertical" />
+                          <Checkbox checked={roleSortByLines} onChange={(e) => setRoleSortByLines(e.target.checked)}>
+                            按对话次数排序
+                          </Checkbox>
                         </div>
 
                         {/* 角色卡片网格 */}
@@ -1200,6 +1239,7 @@ export default function ProjectDetail() {
                                   <Space>
                                     <Avatar size={28} style={{ background: '#6366f1' }}>{r.name.slice(0, 1)}</Avatar>
                                     <Text strong style={{ color: '#cdd6f4' }}>{r.name}</Text>
+                                    <Tag color="blue" style={{ fontSize: 11 }}>{roleLineCounts[r.id] || 0} 句</Tag>
                                   </Space>
                                   <Popconfirm title="确定删除？" onConfirm={() => handleDeleteRole(r.id)}>
                                     <Button type="text" danger size="small" icon={<DeleteOutlined />} />
@@ -1544,6 +1584,16 @@ export default function ProjectDetail() {
           </Form.Item>
           <Form.Item name="is_precise_fill" label="精准填充">
             <Select options={[{ value: 0, label: '关闭' }, { value: 1, label: '开启' }]} />
+          </Form.Item>
+          <Form.Item name="passerby_voice_pool" label="路人语音池" tooltip="选择用于路人角色随机分配的音色，未绑定音色的角色将从此池中随机获取">
+            <Select
+              mode="multiple"
+              allowClear
+              placeholder="选择音色加入路人语音池"
+              options={voices.map((v) => ({ value: v.id, label: v.name }))}
+              optionFilterProp="label"
+              showSearch
+            />
           </Form.Item>
         </Form>
       </Modal>
