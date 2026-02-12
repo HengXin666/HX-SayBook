@@ -1,4 +1,3 @@
-from numba.scripts.generate_lower_listing import description
 from sqlalchemy import Sequence
 
 from py.core.enums import TaskEnum
@@ -27,7 +26,7 @@ class PromptService:
         for start, end, placeholder in REQUIRED_BLOCKS:
             if start not in content or end not in content or placeholder not in content:
                 return False
-        return  True
+        return True
 
     # 创建默认提示词
     def create_default_prompt(self):
@@ -35,10 +34,12 @@ class PromptService:
         name = "默认拆分台词提示词"
         description = "默认拆分台词提示词"
         content = get_prompt_str()
-        self.create_prompt(PromptEntity(name=name, description=description, content=content, task=task))
+        self.create_prompt(
+            PromptEntity(name=name, description=description, content=content, task=task)
+        )
         return True
 
-    def create_prompt(self,  entity: PromptEntity):
+    def create_prompt(self, entity: PromptEntity):
         """创建新提示词
         - 检查同名提示词是否存在
         - 如果存在，抛出异常或返回错误
@@ -68,7 +69,6 @@ class PromptService:
         # 将po转化为entity
         return entity
 
-
     def get_prompt(self, prompt_id: int) -> PromptEntity | None:
         """根据 ID 查询提示词"""
         po = self.repository.get_by_id(prompt_id)
@@ -84,24 +84,29 @@ class PromptService:
         # pos -> entities
 
         entities = [
-            PromptEntity(**{k: v for k, v in po.__dict__.items() if not k.startswith("_")})
+            PromptEntity(
+                **{k: v for k, v in po.__dict__.items() if not k.startswith("_")}
+            )
             for po in pos
         ]
         return entities
 
-    def update_prompt(self, prompt_id: int, data:dict) -> bool:
+    def update_prompt(self, prompt_id: int, data: dict) -> bool:
         """更新提示词
         - 可以只更新部分字段
         - 检查同名冲突
         """
         name = data["name"]
         task = data.get("task")
-        if self.repository.get_by_name(name) and self.repository.get_by_name(name).id != prompt_id:
+        if (
+            self.repository.get_by_name(name)
+            and self.repository.get_by_name(name).id != prompt_id
+        ):
             return False
         # 如果改的是content
 
         if TaskEnum(task) == TaskEnum.DUBBING:
-            if not self.validate_prompt_with_DUBBING(content=data['content']):
+            if not self.validate_prompt_with_DUBBING(content=data["content"]):
                 return False
 
         self.repository.update(prompt_id, data)
@@ -114,11 +119,14 @@ class PromptService:
         """
         res = self.repository.delete(prompt_id)
         return res
+
     # 根据task 获取提示词列表
     def get_prompt_by_task(self, task: str) -> Sequence[PromptEntity]:
         pos = self.repository.get_by_task(task)
         entities = [
-            PromptEntity(**{k: v for k, v in po.__dict__.items() if not k.startswith("_")})
+            PromptEntity(
+                **{k: v for k, v in po.__dict__.items() if not k.startswith("_")}
+            )
             for po in pos
         ]
         return entities
@@ -127,7 +135,6 @@ class PromptService:
     def get_all_tasks(self) -> Sequence[str]:
         # 这些写死了，后面也在这添加，不改成数据库
         return list(TaskEnum)
-
 
     # def test_prompt(self, entity: PromptEntity):
     #     """测试提示词"""
@@ -141,7 +148,7 @@ class PromptService:
     #         return True
     #     return False
 
-#     根据名字获取提示词
+    #     根据名字获取提示词
     def get_prompt_by_name(self, name: str) -> PromptEntity | None:
         """根据名字获取提示词"""
         po = self.repository.get_by_name(name)
@@ -150,7 +157,3 @@ class PromptService:
         data = {k: v for k, v in po.__dict__.items() if not k.startswith("_")}
         res = PromptEntity(**data)
         return res
-
-
-
-

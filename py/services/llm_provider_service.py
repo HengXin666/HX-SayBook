@@ -1,6 +1,5 @@
 import json
 
-from aiohttp.abc import HTTPException
 from sqlalchemy import Sequence
 
 from py.core.llm_engine import LLMEngine
@@ -16,7 +15,7 @@ class LLMProviderService:
         """注入 repository"""
         self.repository = repository
 
-    def create_llm_provider(self,  entity: LLMProviderEntity):
+    def create_llm_provider(self, entity: LLMProviderEntity):
         """创建新LLM供应商
         - 检查同名LLM供应商是否存在
         - 如果存在，抛出异常或返回错误
@@ -26,7 +25,13 @@ class LLMProviderService:
         if llm_provider:
             return None
         # 手动将entity转化为po
-        po = LLMProviderPO(**entity.__dict__)
+        data = entity.__dict__.copy()
+        # 确保 custom_params 存入数据库时为 JSON 字符串
+        if isinstance(data.get("custom_params"), dict):
+            data["custom_params"] = json.dumps(
+                data["custom_params"], ensure_ascii=False
+            )
+        po = LLMProviderPO(**data)
         res = self.repository.create(po)
 
         # res(po) --> entity
@@ -35,7 +40,6 @@ class LLMProviderService:
 
         # 将po转化为entity
         return entity
-
 
     def get_llm_provider(self, llm_provider_id: int) -> LLMProviderEntity | None:
         """根据 ID 查询LLM供应商"""
@@ -52,19 +56,29 @@ class LLMProviderService:
         # pos -> entities
 
         entities = [
-            LLMProviderEntity(**{k: v for k, v in po.__dict__.items() if not k.startswith("_")})
+            LLMProviderEntity(
+                **{k: v for k, v in po.__dict__.items() if not k.startswith("_")}
+            )
             for po in pos
         ]
         return entities
 
-    def update_llm_provider(self, llm_provider_id: int, data:dict) -> bool:
+    def update_llm_provider(self, llm_provider_id: int, data: dict) -> bool:
         """更新LLM供应商
         - 可以只更新部分字段
         - 检查同名冲突
         """
         name = data["name"]
-        if self.repository.get_by_name(name) and self.repository.get_by_name(name).id != llm_provider_id:
+        if (
+            self.repository.get_by_name(name)
+            and self.repository.get_by_name(name).id != llm_provider_id
+        ):
             return False
+        # 确保 custom_params 存入数据库时为 JSON 字符串
+        if isinstance(data.get("custom_params"), dict):
+            data["custom_params"] = json.dumps(
+                data["custom_params"], ensure_ascii=False
+            )
         self.repository.update(llm_provider_id, data)
         return True
 
@@ -79,18 +93,26 @@ class LLMProviderService:
     def test_llm_provider(self, entity: LLMProviderEntity):
         """测试LLM供应商"""
         # 按逗号划分模型名称
-        if entity.api_base_url is None or entity.api_key is None or entity.model_list is None:
+        if (
+            entity.api_base_url is None
+            or entity.api_key is None
+            or entity.model_list is None
+        ):
             return False
         model_lists = entity.model_list.split(",")
         custom_params = entity.custom_params
-        llm = LLMEngine(entity.api_key, entity.api_base_url, model_lists[0],custom_params)
+        llm = LLMEngine(
+            entity.api_key, entity.api_base_url, model_lists[0], custom_params
+        )
         try:
-            res = llm.generate_text_test("请输出一份用户信息，严格使用 JSON 格式，不要包含任何额外文字。字段包括：name, age, city")
+            res = llm.generate_text_test(
+                "请输出一份用户信息，严格使用 JSON 格式，不要包含任何额外文字。字段包括：name, age, city"
+            )
         except Exception as e:
-            return  False,str(e)
-        print('测试结果为：', res)
+            return False, str(e)
+        print("测试结果为：", res)
         if res is None:
-            return False,"LLM 未返回任何内容"
+            return False, "LLM 未返回任何内容"
 
         # 7. 校验返回是否为合法 JSON
         try:
@@ -99,8 +121,4 @@ class LLMProviderService:
             json.loads(res)
         except json.JSONDecodeError:
             return False, "LLM 返回的内容不是合法 JSON，请检查模型 / 提示词"
-        return True,"测试成功"
-
-
-
-
+        return True, "测试成功"

@@ -1,4 +1,4 @@
-import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
+import { ApiOutlined, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { Button, Card, Form, Input, message, Modal, Popconfirm, Space, Table, Tabs, Tag, Typography } from 'antd';
 import { useEffect, useState } from 'react';
 import { llmProviderApi, ttsProviderApi } from '../api';
@@ -15,6 +15,8 @@ export default function ConfigCenter() {
   const [editTTS, setEditTTS] = useState<TTSProvider | null>(null);
   const [llmForm] = Form.useForm();
   const [ttsForm] = Form.useForm();
+  const [testingLLM, setTestingLLM] = useState(false);
+  const [testingTTS, setTestingTTS] = useState(false);
 
   useEffect(() => {
     fetchLLMProviders();
@@ -47,6 +49,25 @@ export default function ConfigCenter() {
     fetchLLMProviders();
   };
 
+  // LLM 测试连接
+  const handleTestLLM = async () => {
+    try {
+      const values = await llmForm.validateFields();
+      setTestingLLM(true);
+      const res = await llmProviderApi.test(values);
+      if (res.code === 200) {
+        message.success('LLM 连接测试成功 ✅');
+      } else {
+        message.error(`测试失败：${res.message || '未知错误'}`);
+      }
+    } catch (e: unknown) {
+      const errMsg = e instanceof Error ? e.message : '请求异常';
+      message.error(`测试失败：${errMsg}`);
+    } finally {
+      setTestingLLM(false);
+    }
+  };
+
   // TTS CRUD
   const handleSaveTTS = async () => {
     try {
@@ -73,9 +94,32 @@ export default function ConfigCenter() {
     fetchTTSProviders();
   };
 
+  // TTS 测试连接
+  const handleTestTTS = async () => {
+    try {
+      const values = await ttsForm.validateFields();
+      setTestingTTS(true);
+      const res = await ttsProviderApi.test(values);
+      if (res.code === 200) {
+        message.success('TTS 连接测试成功 ✅');
+      } else {
+        message.error(`测试失败：${res.message || '未知错误'}`);
+      }
+    } catch (e: unknown) {
+      const errMsg = e instanceof Error ? e.message : '请求异常';
+      message.error(`测试失败：${errMsg}`);
+    } finally {
+      setTestingTTS(false);
+    }
+  };
+
   const llmColumns = [
     { title: '名称', dataIndex: 'name', key: 'name' },
     { title: 'API 地址', dataIndex: 'api_base_url', key: 'api_base_url', ellipsis: true },
+    {
+      title: '模型列表', dataIndex: 'model_list', key: 'model_list', ellipsis: true,
+      render: (v: string | null) => v || <Tag color="default">未配置</Tag>,
+    },
     {
       title: '状态', dataIndex: 'status', key: 'status',
       render: (s: number) => <Tag color={s === 1 ? 'green' : 'red'}>{s === 1 ? '启用' : '禁用'}</Tag>,
@@ -144,11 +188,25 @@ export default function ConfigCenter() {
       />
 
       {/* LLM Modal */}
-      <Modal title={editLLM ? '编辑 LLM' : '新增 LLM'} open={llmModalOpen} onOk={handleSaveLLM} onCancel={() => setLlmModalOpen(false)}>
+      <Modal
+        title={editLLM ? '编辑 LLM' : '新增 LLM'}
+        open={llmModalOpen}
+        onCancel={() => setLlmModalOpen(false)}
+        footer={[
+          <Button key="test" icon={<ApiOutlined />} loading={testingLLM} onClick={handleTestLLM}>
+            测试连接
+          </Button>,
+          <Button key="cancel" onClick={() => setLlmModalOpen(false)}>取消</Button>,
+          <Button key="ok" type="primary" onClick={handleSaveLLM}>确定</Button>,
+        ]}
+      >
         <Form form={llmForm} layout="vertical">
           <Form.Item name="name" label="名称" rules={[{ required: true }]}><Input placeholder="如: OpenAI" /></Form.Item>
           <Form.Item name="api_base_url" label="API 地址" rules={[{ required: true }]}><Input placeholder="https://api.openai.com/v1" /></Form.Item>
           <Form.Item name="api_key" label="API Key"><Input.Password placeholder="sk-..." /></Form.Item>
+          <Form.Item name="model_list" label="模型列表" tooltip="多个模型用英文逗号分隔，如: gpt-4,gpt-3.5-turbo">
+            <Input placeholder="gpt-4,gpt-3.5-turbo（逗号分隔）" />
+          </Form.Item>
           <Form.Item name="custom_params" label="自定义参数 (JSON)">
             <Input.TextArea rows={4} placeholder='{"temperature": 0.7, "top_p": 0.9}' />
           </Form.Item>
@@ -156,7 +214,18 @@ export default function ConfigCenter() {
       </Modal>
 
       {/* TTS Modal */}
-      <Modal title={editTTS ? '编辑 TTS' : '新增 TTS'} open={ttsModalOpen} onOk={handleSaveTTS} onCancel={() => setTtsModalOpen(false)}>
+      <Modal
+        title={editTTS ? '编辑 TTS' : '新增 TTS'}
+        open={ttsModalOpen}
+        onCancel={() => setTtsModalOpen(false)}
+        footer={[
+          <Button key="test" icon={<ApiOutlined />} loading={testingTTS} onClick={handleTestTTS}>
+            测试连接
+          </Button>,
+          <Button key="cancel" onClick={() => setTtsModalOpen(false)}>取消</Button>,
+          <Button key="ok" type="primary" onClick={handleSaveTTS}>确定</Button>,
+        ]}
+      >
         <Form form={ttsForm} layout="vertical">
           <Form.Item name="name" label="名称" rules={[{ required: true }]}><Input placeholder="如: Index-TTS" /></Form.Item>
           <Form.Item name="api_base_url" label="API 地址" rules={[{ required: true }]}><Input placeholder="http://127.0.0.1:8000" /></Form.Item>

@@ -10,6 +10,7 @@ export const projectApi = {
   create: (data: Partial<Project>) => api.post<unknown, Res<Project>>('/projects', data),
   update: (id: number, data: Partial<Project>) => api.put<unknown, Res<Project>>(`/projects/${id}`, data),
   delete: (id: number) => api.delete<unknown, Res>(`/projects/${id}`),
+  importChapters: (projectId: number, data: { id: number; content: string }) => api.post<unknown, Res>(`/projects/${projectId}/import`, data),
 };
 
 // ============================================================
@@ -35,12 +36,18 @@ export const chapterApi = {
 // 台词
 // ============================================================
 export const lineApi = {
-  getByChapter: (chapterId: number) => api.get<unknown, Res<Line[]>>(`/lines/chapter/${chapterId}`),
+  getByChapter: (chapterId: number) => api.get<unknown, Res<Line[]>>(`/lines/lines/${chapterId}`),
   get: (id: number) => api.get<unknown, Res<Line>>(`/lines/${id}`),
+  create: (projectId: number, data: Partial<Line>) => api.post<unknown, Res<Line>>(`/lines/${projectId}`, data),
   update: (id: number, data: Partial<Line>) => api.put<unknown, Res>(`/lines/${id}`, data),
   delete: (id: number) => api.delete<unknown, Res>(`/lines/${id}`),
-  deleteAll: (chapterId: number) => api.delete<unknown, Res>(`/lines/chapter/${chapterId}`),
-  exportAudio: (chapterId: number, single?: boolean) => api.get<unknown, Res>(`/lines/export/${chapterId}`, { params: { single } }),
+  deleteAll: (chapterId: number) => api.delete<unknown, Res>(`/lines/lines/${chapterId}`),
+  reorder: (orders: { id: number; line_order: number }[]) => api.put<unknown, Res<boolean>>('/lines/batch/orders', orders),
+  generateAudio: (projectId: number, chapterId: number, data: Partial<Line>) => api.post<unknown, Res>(`/lines/generate-audio/${projectId}/${chapterId}`, data),
+  processAudio: (lineId: number, data: { speed?: number; volume?: number; start_ms?: number | null; end_ms?: number | null; silence_sec?: number; current_ms?: number | null }) => api.post<unknown, Res>(`/lines/process-audio/${lineId}`, data),
+  updateAudioPath: (lineId: number, data: { chapter_id: number; audio_path: string }) => api.put<unknown, Res<boolean>>(`/lines/${lineId}/audio_path`, data),
+  exportAudio: (chapterId: number, single?: boolean) => api.get<unknown, Res>(`/lines/export-audio/${chapterId}`, { params: { single } }),
+  correctSubtitle: (chapterId: number) => api.post<unknown, Res>(`/lines/correct-subtitle/${chapterId}`),
 };
 
 // ============================================================
@@ -80,22 +87,24 @@ export const strengthApi = {
 // LLM 提供商
 // ============================================================
 export const llmProviderApi = {
-  getAll: () => api.get<unknown, Res<LLMProvider[]>>('/llm-providers'),
-  get: (id: number) => api.get<unknown, Res<LLMProvider>>(`/llm-providers/${id}`),
-  create: (data: Partial<LLMProvider>) => api.post<unknown, Res<LLMProvider>>('/llm-providers', data),
-  update: (id: number, data: Partial<LLMProvider>) => api.put<unknown, Res>(`/llm-providers/${id}`, data),
-  delete: (id: number) => api.delete<unknown, Res>(`/llm-providers/${id}`),
+  getAll: () => api.get<unknown, Res<LLMProvider[]>>('/llm_providers'),
+  get: (id: number) => api.get<unknown, Res<LLMProvider>>(`/llm_providers/${id}`),
+  create: (data: Partial<LLMProvider>) => api.post<unknown, Res<LLMProvider>>('/llm_providers', data),
+  update: (id: number, data: Partial<LLMProvider>) => api.put<unknown, Res>(`/llm_providers/${id}`, data),
+  delete: (id: number) => api.delete<unknown, Res>(`/llm_providers/${id}`),
+  test: (data: Partial<LLMProvider>) => api.post<unknown, Res>('/llm_providers/test', data),
 };
 
 // ============================================================
 // TTS 提供商
 // ============================================================
 export const ttsProviderApi = {
-  getAll: () => api.get<unknown, Res<TTSProvider[]>>('/tts-providers'),
-  get: (id: number) => api.get<unknown, Res<TTSProvider>>(`/tts-providers/${id}`),
-  create: (data: Partial<TTSProvider>) => api.post<unknown, Res<TTSProvider>>('/tts-providers', data),
-  update: (id: number, data: Partial<TTSProvider>) => api.put<unknown, Res>(`/tts-providers/${id}`, data),
-  delete: (id: number) => api.delete<unknown, Res>(`/tts-providers/${id}`),
+  getAll: () => api.get<unknown, Res<TTSProvider[]>>('/tts_providers'),
+  get: (id: number) => api.get<unknown, Res<TTSProvider>>(`/tts_providers/${id}`),
+  create: (data: Partial<TTSProvider>) => api.post<unknown, Res<TTSProvider>>('/tts_providers', data),
+  update: (id: number, data: Partial<TTSProvider>) => api.put<unknown, Res>(`/tts_providers/${id}`, data),
+  delete: (id: number) => api.delete<unknown, Res>(`/tts_providers/${id}`),
+  test: (data: Partial<TTSProvider>) => api.post<unknown, Res>('/tts_providers/test', data),
 };
 
 // ============================================================
