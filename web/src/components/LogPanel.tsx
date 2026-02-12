@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 interface LogPanelProps {
   logs: string[];
   maxHeight?: number;
+  height?: number; // 精确高度（优先于 maxHeight）
   onClear?: () => void;
   title?: string;
 }
@@ -24,7 +25,7 @@ const typeColorMap: Record<string, string> = {
   info: '#a6adc8',
 };
 
-export default function LogPanel({ logs, maxHeight = 300, onClear, title = '📊 实时日志' }: LogPanelProps) {
+export default function LogPanel({ logs, maxHeight = 300, height, onClear, title = '📊 实时日志' }: LogPanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
 
@@ -42,7 +43,7 @@ export default function LogPanel({ logs, maxHeight = 300, onClear, title = '📊
   };
 
   return (
-    <div style={{ background: '#181825', borderRadius: 8, border: '1px solid #313244' }}>
+    <div style={{ background: '#181825', borderRadius: 8, border: '1px solid #313244', display: 'flex', flexDirection: 'column', height: height != null ? '100%' : undefined }}>
       {/* 标题栏 */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', borderBottom: '1px solid #313244' }}>
         <Space>
@@ -81,7 +82,7 @@ export default function LogPanel({ logs, maxHeight = 300, onClear, title = '📊
         ref={containerRef}
         onScroll={handleScroll}
         style={{
-          maxHeight,
+          ...(height != null ? { flex: 1, minHeight: 0 } : { maxHeight }),
           overflowY: 'auto',
           padding: '8px 12px',
           fontFamily: "'Fira Code', 'Cascadia Code', monospace",

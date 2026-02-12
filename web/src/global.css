@@ -32,10 +32,15 @@ html, body, #root {
 
 .ant-layout-sider {
   background: #1e1e2e !important;
+  transition: width 0.2s ease !important;
 }
 
 .ant-menu {
   background: transparent !important;
+}
+
+.ant-menu .ant-menu-item {
+  transition: all 0.2s ease;
 }
 
 .logo-title {
@@ -47,33 +52,7 @@ html, body, #root {
   font-weight: bold;
   color: #cba6f7;
   gap: 8px;
-}
-
-.log-panel {
-  max-height: 300px;
-  overflow-y: auto;
-  background: #181825;
-  border-radius: 8px;
-  padding: 12px;
-  font-family: 'Fira Code', 'Cascadia Code', monospace;
-  font-size: 12px;
-  line-height: 1.8;
-}
-
-.log-line {
-  color: #a6adc8;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
-.log-line.error {
-  color: #f38ba8;
-}
-
-.log-line.success {
-  color: #a6e3a1;
-}
-
-.log-line.warning {
-  color: #f9e2af;
+  white-space: nowrap;
+  overflow: hidden;
+  transition: all 0.2s ease;
 }
