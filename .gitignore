@@ -1,0 +1,44 @@
+# 后端数据
+*.db
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.egg
+
+# 前端
+web/node_modules/
+web/dist/
+
+# 音频/临时文件
+*.wav
+*.mp3
+*.ogg
+output/
+previews/
+debug/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 环境
+.env.local
+.env.production.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# uv
+.python-version
+uv.lock

@@ -1,0 +1,44 @@
+[project]
+name = "hx-saybook"
+version = "2.0.0"
+description = "HX-SayBook - AI 多角色多情绪小说配音平台（基于 SonicVale 二次开发）"
+readme = "README.md"
+license = {text = "AGPL-3.0"}
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.34.0",
+    "sqlalchemy>=2.0.30",
+    "pydantic>=2.10.0",
+    "openai>=1.60.0",
+    "requests>=2.32.0",
+    "soundfile>=0.13.0",
+    "numpy>=1.26.0",
+    "pypinyin>=0.55.0",
+    "openpyxl>=3.1.0",
+    "python-multipart>=0.0.17",
+]
+
+[project.optional-dependencies]
+# index-tts 可选安装（需要 GPU 支持）
+tts = [
+    "torch>=2.0.0",
+    "torchaudio>=2.0.0",
+]
+dev = [
+    "ruff>=0.8.0",
+    "pytest>=8.0.0",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "ruff>=0.8.0",
+    "pytest>=8.0.0",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
