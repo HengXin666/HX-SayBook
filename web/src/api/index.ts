@@ -48,6 +48,7 @@ export const lineApi = {
   updateAudioPath: (lineId: number, data: { chapter_id: number; audio_path: string }) => api.put<unknown, Res<boolean>>(`/lines/${lineId}/audio_path`, data),
   exportAudio: (chapterId: number, single?: boolean) => api.get<unknown, Res>(`/lines/export-audio/${chapterId}`, { params: { single } }),
   correctSubtitle: (chapterId: number) => api.post<unknown, Res>(`/lines/correct-subtitle/${chapterId}`),
+  mergeExport: (data: { project_id: number; chapter_ids: number[]; group_size: number; max_duration_minutes: number }) => api.post<unknown, Res>('/lines/merge-export', data),
 };
 
 // ============================================================
