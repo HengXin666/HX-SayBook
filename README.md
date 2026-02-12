@@ -30,7 +30,7 @@
 
 ```
 HX-SayBook/
-├── app/                    # 后端 (FastAPI)
+├── py/                     # 后端 (FastAPI)
 │   ├── core/               # 核心引擎 (LLM, TTS, 音频处理)
 │   ├── routers/            # API 路由
 │   │   ├── batch_router.py # 新增：批量处理路由
@@ -66,7 +66,7 @@ chmod +x start.sh
 
 # 方式二：手动启动
 uv sync
-uv run uvicorn app.main:app --host 0.0.0.0 --port 8200 --reload
+uv run uvicorn py.main:app --host 0.0.0.0 --port 8200 --reload
 ```
 
 ### 2. 启动前端
@@ -100,7 +100,7 @@ chmod +x scripts/install_index_tts.sh
 
 - Python 3.10+
 - Node.js 18+
-- ffmpeg（系统 PATH 中或放到 `app/core/ffmpeg/` 下）
+- ffmpeg（系统 PATH 中或放到 `py/core/ffmpeg/` 下）
 - (可选) NVIDIA GPU + CUDA（Index-TTS 需要）
 
 ## 📝 License
