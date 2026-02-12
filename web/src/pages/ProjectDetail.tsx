@@ -12,7 +12,6 @@ import {
   SettingOutlined,
   SoundOutlined,
   ThunderboltOutlined,
-  UnorderedListOutlined,
   UploadOutlined
 } from '@ant-design/icons';
 import {
@@ -115,8 +114,7 @@ export default function ProjectDetail() {
   // ==================== 批量操作弹窗 ====================
   const [batchLLMModalOpen, setBatchLLMModalOpen] = useState(false);
   const [batchTTSModalOpen, setBatchTTSModalOpen] = useState(false);
-  const [showLogPanel, setShowLogPanel] = useState(false);
-  const [globalLogs, setGlobalLogs] = useState<string[]>([]);
+
 
   // ==================== 播放状态 ====================
   const audioRef = useRef(new Audio());
@@ -126,6 +124,10 @@ export default function ProjectDetail() {
   // ==================== 队列状态 ====================
   const [queueRestSize, setQueueRestSize] = useState(0);
   const [activeTab, setActiveTab] = useState('lines');
+
+
+
+
 
   // ==================== 计算值 ====================
   const currentChapter = useMemo(() => chapters.find((c) => c.id === activeChapterId) || null, [chapters, activeChapterId]);
@@ -237,46 +239,14 @@ export default function ProjectDetail() {
           ),
         );
       }),
-      // 监听批量操作日志（全局日志面板）
-      subscribe('batch_llm_progress', (data: WSEvent) => {
-        if (data.project_id === projectId && data.log) {
-          setGlobalLogs((prev) => [...prev.slice(-300), `[${new Date().toLocaleTimeString()}] ${data.log as string}`]);
-        }
-      }),
-      subscribe('batch_llm_log', (data: WSEvent) => {
-        if (data.project_id === projectId && data.log) {
-          setGlobalLogs((prev) => [...prev.slice(-300), `[${new Date().toLocaleTimeString()}] ${data.log as string}`]);
-        }
-      }),
-      subscribe('batch_llm_complete', (data: WSEvent) => {
-        if (data.project_id === projectId && data.log) {
-          setGlobalLogs((prev) => [...prev.slice(-300), `[${new Date().toLocaleTimeString()}] ${data.log as string}`]);
-        }
-      }),
-      subscribe('batch_tts_start', (data: WSEvent) => {
-        if (data.project_id === projectId && data.log) {
-          setGlobalLogs((prev) => [...prev.slice(-300), `[${new Date().toLocaleTimeString()}] ${data.log as string}`]);
-        }
-      }),
+      // 监听批量 TTS 进度，更新台词状态
       subscribe('batch_tts_line_progress', (data: WSEvent) => {
         if (data.project_id === projectId) {
-          if (data.log) setGlobalLogs((prev) => [...prev.slice(-300), `[${new Date().toLocaleTimeString()}] ${data.log as string}`]);
-          // 更新当前章节的台词状态
           const lineId = data.line_id as number;
           const status = data.status as Line['status'];
           if (lineId) {
             setLines((prev) => prev.map((l) => l.id === lineId ? { ...l, status } : l));
           }
-        }
-      }),
-      subscribe('batch_tts_chapter_done', (data: WSEvent) => {
-        if (data.project_id === projectId && data.log) {
-          setGlobalLogs((prev) => [...prev.slice(-300), `[${new Date().toLocaleTimeString()}] ${data.log as string}`]);
-        }
-      }),
-      subscribe('batch_tts_complete', (data: WSEvent) => {
-        if (data.project_id === projectId && data.log) {
-          setGlobalLogs((prev) => [...prev.slice(-300), `[${new Date().toLocaleTimeString()}] ${data.log as string}`]);
         }
       }),
     ];
@@ -290,6 +260,8 @@ export default function ProjectDetail() {
     audio.addEventListener('ended', onEnded);
     return () => audio.removeEventListener('ended', onEnded);
   }, []);
+
+
 
   // ==================== 章节操作 ====================
   const handleSelectChapter = (chapter: Chapter) => {
@@ -562,7 +534,7 @@ export default function ProjectDetail() {
       return;
     }
     // 通过 API 代理访问音频文件
-    const src = `/lines/audio-file?path=${encodeURIComponent(row.audio_path)}`;
+    const src = `/api/lines/audio-file?path=${encodeURIComponent(row.audio_path)}`;
     audio.src = src;
     audio.currentTime = 0;
     setPlayingLineId(row.id);
@@ -582,7 +554,7 @@ export default function ProjectDetail() {
       setPlayingVoiceId(null);
       return;
     }
-    audio.src = `/voices/audio-file?path=${encodeURIComponent(voice.reference_path)}`;
+    audio.src = `/api/voices/audio-file?path=${encodeURIComponent(voice.reference_path)}`;
     audio.currentTime = 0;
     setPlayingVoiceId(voiceId);
     setPlayingLineId(null);
@@ -912,13 +884,13 @@ export default function ProjectDetail() {
       </Sider>
 
       {/* ==================== 右侧内容区 ==================== */}
-      <Content style={{ display: 'flex', flexDirection: 'column', gap: 12, overflow: 'auto' }}>
+      <Content style={{ display: 'flex', flexDirection: 'column', gap: 12, overflow: 'hidden' }}>
         {!activeChapterId ? (
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <Empty description="请从左侧选择一个章节" />
           </div>
         ) : (
-          <>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, flex: 1, minHeight: 0, overflow: 'hidden' }}>
             {/* ==================== 章节正文卡片 ==================== */}
             <Card
               size="small"
@@ -1003,18 +975,17 @@ export default function ProjectDetail() {
             </Card>
 
             {/* ==================== Tabs: 台词管理 + 角色库 ==================== */}
-            <Card size="small" style={{ background: '#1e1e2e', borderColor: '#313244', flex: 1, display: 'flex', flexDirection: 'column' }} bodyStyle={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 0 }}>
+            <Card size="small" style={{ background: '#1e1e2e', borderColor: '#313244', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }} bodyStyle={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', padding: 0, overflow: 'hidden' }}>
               <Tabs
                 activeKey={activeTab}
                 onChange={setActiveTab}
-                style={{ flex: 1, display: 'flex', flexDirection: 'column' }}
                 tabBarStyle={{ padding: '0 16px' }}
                 items={[
                   {
                     key: 'lines',
                     label: `台词管理 (${lines.length})`,
                     children: (
-                      <div style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: '0 16px 16px' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, padding: '0 16px 16px', overflow: 'hidden' }}>
                         {/* 工具栏 */}
                         <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
                           <Select
@@ -1064,41 +1035,22 @@ export default function ProjectDetail() {
                               onComplete={loadLines}
                             />
                           )}
-                          <Button
-                            size="small"
-                            icon={<UnorderedListOutlined />}
-                            onClick={() => setShowLogPanel(!showLogPanel)}
-                            style={{ color: showLogPanel ? '#6366f1' : undefined }}
-                          >
-                            日志
-                          </Button>
                           <Button size="small" type="default" icon={<DownloadOutlined />} onClick={handleExport} style={{ background: '#52c41a', color: '#fff', borderColor: '#52c41a' }}>
                             导出
                           </Button>
                         </div>
 
                         {/* 台词表格 */}
-                        <Table
-                          dataSource={displayedLines}
-                          columns={lineColumns}
-                          rowKey="id"
-                          size="small"
-                          pagination={false}
-                          scroll={{ y: showLogPanel ? 'calc(100vh - 700px)' : 'calc(100vh - 480px)' }}
-                          style={{ flex: 1 }}
-                        />
-
-                        {/* 实时日志面板 */}
-                        {showLogPanel && (
-                          <div style={{ marginTop: 12 }}>
-                            <LogPanel
-                              logs={globalLogs}
-                              maxHeight={200}
-                              onClear={() => setGlobalLogs([])}
-                              title="📊 实时日志（LLM / TTS 操作）"
-                            />
-                          </div>
-                        )}
+                        <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+                          <Table
+                            dataSource={displayedLines}
+                            columns={lineColumns}
+                            rowKey="id"
+                            size="small"
+                            pagination={false}
+                            scroll={{ y: 'calc(100vh - 280px)' }}
+                          />
+                        </div>
                       </div>
                     ),
                   },
@@ -1209,7 +1161,7 @@ export default function ProjectDetail() {
                 ]}
               />
             </Card>
-          </>
+          </div>
         )}
       </Content>
 
