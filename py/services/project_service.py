@@ -3,6 +3,7 @@ import re
 
 from sqlalchemy import Sequence
 
+from py.core.config import getConfigPath
 from py.entity.project_entity import ProjectEntity
 from py.models.po import ProjectPO
 
@@ -15,7 +16,7 @@ class ProjectService:
         """注入 repository"""
         self.repository = repository
 
-    def create_project(self,  entity: ProjectEntity):
+    def create_project(self, entity: ProjectEntity):
         """创建新项目
         - 检查同名项目是否存在
         - 如果存在，抛出异常或返回错误
@@ -24,10 +25,12 @@ class ProjectService:
         project = self.repository.get_by_name(entity.name)
         if project:
             return None, "项目已存在"
-        # 判断项目根路径是否存在
+        # 如果未指定项目根路径，使用默认数据目录
+        if not entity.project_root_path:
+            entity.project_root_path = getConfigPath()
+        # 判断项目根路径是否存在，不存在则自动创建
         if not os.path.exists(entity.project_root_path):
-            print("项目根路径不存在")
-            return  None, "项目根路径不存在"
+            os.makedirs(entity.project_root_path, exist_ok=True)
         # 手动将entity转化为po
         po = ProjectPO(**entity.__dict__)
         res = self.repository.create(po)
@@ -39,12 +42,17 @@ class ProjectService:
         # 将po转化为entity
         return entity, "创建成功"
 
-
     def get_project(self, project_id: int) -> ProjectEntity | None:
         """根据 ID 查询项目"""
         po = self.repository.get_by_id(project_id)
         if not po:
             return None
+        # 兼容旧数据：project_root_path 为空时自动填充默认路径并持久化
+        if not po.project_root_path:
+            po.project_root_path = getConfigPath()
+            self.repository.update(
+                project_id, {"project_root_path": po.project_root_path}
+            )
         data = {k: v for k, v in po.__dict__.items() if not k.startswith("_")}
         res = ProjectEntity(**data)
         return res
@@ -55,18 +63,23 @@ class ProjectService:
         # pos -> entities
 
         entities = [
-            ProjectEntity(**{k: v for k, v in po.__dict__.items() if not k.startswith("_")})
+            ProjectEntity(
+                **{k: v for k, v in po.__dict__.items() if not k.startswith("_")}
+            )
             for po in pos
         ]
         return entities
 
-    def update_project(self, project_id: int, data:dict) -> bool:
+    def update_project(self, project_id: int, data: dict) -> bool:
         """更新项目
         - 可以只更新部分字段
         - 检查同名冲突
         """
         name = data["name"]
-        if self.repository.get_by_name(name) and self.repository.get_by_name(name).id != project_id:
+        if (
+            self.repository.get_by_name(name)
+            and self.repository.get_by_name(name).id != project_id
+        ):
             return False
         self.repository.update(project_id, data)
         return True
@@ -79,7 +92,6 @@ class ProjectService:
         res = self.repository.delete(project_id)
         return res
 
-
     def search_projects(self, keyword: str) -> Sequence[ProjectEntity]:
         """模糊搜索项目"""
 
@@ -88,7 +100,7 @@ class ProjectService:
         """解析内容，按照章节"""
         # 正则匹配常见章节格式（支持中英文数字）
         chapter_pattern = re.compile(
-            r'(第[\d一二三四五六七八九十百千]+[章回节部卷].*?)(?=\n|$)'
+            r"(第[\d一二三四五六七八九十百千]+[章回节部卷].*?)(?=\n|$)"
         )
         # 找到所有章节标题位置
         matches = list(chapter_pattern.finditer(content))
@@ -103,11 +115,8 @@ class ProjectService:
 
             chapter_name = match.group(1).strip()
             chapter_content = content[start:end].strip()
-            chapters.append({
-                "chapter_name": chapter_name,
-                "content": chapter_content
-            })
+            chapters.append({"chapter_name": chapter_name, "content": chapter_content})
         # 排序
         # chapters.sort(key=lambda x: x["chapter_name"])
         # 不需要排序了，因为是顺序解析得到的
-        return  chapters
+        return chapters
