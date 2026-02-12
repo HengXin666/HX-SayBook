@@ -16,6 +16,7 @@ export interface Project {
   prompt_id: number | null;
   is_precise_fill: number;
   project_root_path: string | null;
+  passerby_voice_pool: number[] | null;
   created_at: string;
   updated_at: string;
 }
@@ -57,6 +58,11 @@ export interface Role {
   default_voice_id: number | null;
   created_at: string;
   updated_at: string;
+}
+
+/** 角色（含对话次数） */
+export interface RoleWithLineCount extends Role {
+  line_count: number;
 }
 
 /** 音色 */

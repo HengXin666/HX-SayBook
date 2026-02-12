@@ -1,4 +1,4 @@
-import type { BatchLLMRequest, BatchTTSRequest, Chapter, Emotion, Line, LLMProvider, Project, Prompt, Res, Role, Strength, TTSProvider, Voice, VoiceDebugRequest } from '../types';
+import type { BatchLLMRequest, BatchTTSRequest, Chapter, Emotion, Line, LLMProvider, Project, Prompt, Res, Role, RoleWithLineCount, Strength, TTSProvider, Voice, VoiceDebugRequest } from '../types';
 import api from './client';
 
 // ============================================================
@@ -60,6 +60,10 @@ export const roleApi = {
   create: (data: Partial<Role>) => api.post<unknown, Res<Role>>('/roles/', data),
   update: (id: number, data: Partial<Role>) => api.put<unknown, Res>(`/roles/${id}`, data),
   delete: (id: number) => api.delete<unknown, Res>(`/roles/${id}`),
+  /** 随机分配路人语音池中的音色给未绑定的角色 */
+  assignPasserbyVoices: (projectId: number) => api.post<unknown, Res>(`/roles/project/${projectId}/assign-passerby-voices`),
+  /** 获取角色列表（按对话次数降序排列） */
+  getSortedByLines: (projectId: number) => api.get<unknown, Res<RoleWithLineCount[]>>(`/roles/project/${projectId}/sorted-by-lines`),
 };
 
 // ============================================================

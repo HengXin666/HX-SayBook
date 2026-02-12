@@ -32,6 +32,8 @@ class ProjectPO(Base):
     is_precise_fill = Column(Integer, default=0, nullable=False)
     # 项目根地址
     project_root_path = Column(String(255), nullable=True)
+    # 路人语音池（JSON数组，存储voice_id列表）
+    passerby_voice_pool = Column(JSON, nullable=True)
     created_at = Column(
         DateTime, default=lambda: datetime.now(timezone.utc), nullable=False
     )
