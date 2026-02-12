@@ -18,4 +18,4 @@ cd "$SCRIPT_DIR"
 uv sync
 
 echo "🚀 启动 HX-SayBook 后端..."
-uv run uvicorn app.main:app --host 0.0.0.0 --port 8200 --reload
+uv run uvicorn py.main:app --host 0.0.0.0 --port 8200 --reload
