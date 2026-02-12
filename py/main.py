@@ -187,6 +187,25 @@ async def startup_event():
         except Exception as e:
             logger.debug("默认 TTS provider: %s", e)
 
+        # 默认音色
+        try:
+            from py.repositories.voice_repository import VoiceRepository
+            from py.repositories.multi_emotion_voice_repository import (
+                MultiEmotionVoiceRepository,
+            )
+            from py.services.voice_service import VoiceService
+
+            voice_repo = VoiceRepository(db)
+            multi_emotion_repo = MultiEmotionVoiceRepository(db)
+            voice_service = VoiceService(voice_repo, multi_emotion_repo)
+            created = voice_service.create_default_voices(tts_provider_id=1)
+            if created > 0:
+                logger.info(
+                    "已初始化 %d 个默认中文音色（含新建和补充音频路径）", created
+                )
+        except Exception as e:
+            logger.warning("默认音色初始化: %s", e)
+
         # 情绪
         try:
             emotion_service = get_emotion_service(db)

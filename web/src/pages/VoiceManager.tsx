@@ -14,7 +14,7 @@ export default function VoiceManager() {
   const [form] = Form.useForm();
 
   useEffect(() => {
-    fetchVoices();
+    fetchVoices();  // 后端默认 tts_provider_id=1
     fetchTTSProviders();
   }, []);
 
