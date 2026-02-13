@@ -1026,3 +1026,880 @@ async def batch_adjust_speed(
         )
     except Exception as e:
         return Res(code=500, message=f"批量速度调节失败: {e}")
+
+
+# ============================================================
+# 一键挂机（Autopilot）：LLM → 智能音色 → TTS 全自动流水线
+# ============================================================
+
+
+class AutopilotRequest(BaseModel):
+    """一键挂机请求"""
+
+    project_id: int
+    chapter_ids: List[int]
+    concurrency: int = 1  # LLM 并发数
+    speed: float = 1.0  # TTS 全局速度
+    voice_match_interval: int = 10  # 每隔多少章做一次智能音色匹配
+    manual_voice_assign: bool = (
+        False  # 是否手动分配音色（跳过智能匹配，直接暂停让用户分配）
+    )
+
+
+# 存储运行中的挂机任务: project_id -> task_info
+_autopilot_tasks: dict = {}
+
+
+@router.post(
+    "/autopilot-start",
+    response_model=Res,
+    summary="一键挂机启动",
+    description="自动执行 LLM解析 → 智能音色匹配 → TTS配音 的全流程，支持暂停/继续",
+)
+async def autopilot_start(req: AutopilotRequest):
+    """启动一键挂机任务"""
+    if req.project_id in _autopilot_tasks:
+        return Res(code=400, message="该项目已有挂机任务在运行中，请先取消后再重试")
+
+    concurrency = max(1, min(10, req.concurrency))
+    cancel_event = threading.Event()
+    pause_event = threading.Event()  # set = 暂停中
+    resume_event = threading.Event()  # set = 可以继续
+    resume_event.set()  # 默认不暂停
+
+    task = asyncio.create_task(
+        _do_autopilot(
+            req.project_id,
+            req.chapter_ids,
+            concurrency,
+            req.speed,
+            req.voice_match_interval,
+            req.manual_voice_assign,
+            cancel_event,
+            pause_event,
+            resume_event,
+        )
+    )
+
+    _autopilot_tasks[req.project_id] = {
+        "cancel_event": cancel_event,
+        "pause_event": pause_event,
+        "resume_event": resume_event,
+        "task": task,
+        "chapter_ids": req.chapter_ids,
+    }
+
+    def _cleanup(fut):
+        _autopilot_tasks.pop(req.project_id, None)
+
+    task.add_done_callback(_cleanup)
+
+    return Res(
+        code=200,
+        message="一键挂机任务已启动",
+        data={
+            "chapter_count": len(req.chapter_ids),
+            "concurrency": concurrency,
+            "voice_match_interval": req.voice_match_interval,
+        },
+    )
+
+
+@router.get(
+    "/autopilot-status",
+    response_model=Res,
+    summary="查询挂机任务状态",
+)
+async def autopilot_status(project_id: int):
+    """查询一键挂机任务是否正在运行"""
+    task_info = _autopilot_tasks.get(project_id)
+    if not task_info:
+        return Res(code=200, message="无运行中的任务", data={"running": False})
+
+    return Res(
+        code=200,
+        message="任务运行中",
+        data={
+            "running": True,
+            "paused": task_info["pause_event"].is_set(),
+            "cancelled": task_info["cancel_event"].is_set(),
+        },
+    )
+
+
+@router.post(
+    "/autopilot-pause",
+    response_model=Res,
+    summary="暂停挂机任务",
+    description="暂停一键挂机任务，当前章节会处理完再暂停",
+)
+async def autopilot_pause(project_id: int):
+    """暂停一键挂机任务"""
+    task_info = _autopilot_tasks.get(project_id)
+    if not task_info:
+        return Res(code=404, message="没有正在运行的挂机任务")
+
+    task_info["pause_event"].set()
+    task_info["resume_event"].clear()
+    logger.info(f"挂机任务暂停信号已发送: project_id={project_id}")
+
+    await manager.broadcast(
+        {
+            "event": "autopilot_log",
+            "project_id": project_id,
+            "log": "⏸️ 暂停信号已发送，当前章节处理完后暂停",
+        }
+    )
+    return Res(code=200, message="暂停信号已发送，当前章节处理完后暂停")
+
+
+@router.post(
+    "/autopilot-resume",
+    response_model=Res,
+    summary="继续挂机任务",
+    description="继续已暂停的一键挂机任务",
+)
+async def autopilot_resume(project_id: int):
+    """继续已暂停的一键挂机任务"""
+    task_info = _autopilot_tasks.get(project_id)
+    if not task_info:
+        return Res(code=404, message="没有正在运行的挂机任务")
+
+    task_info["pause_event"].clear()
+    task_info["resume_event"].set()
+    logger.info(f"挂机任务继续信号已发送: project_id={project_id}")
+
+    await manager.broadcast(
+        {
+            "event": "autopilot_log",
+            "project_id": project_id,
+            "log": "▶️ 任务已继续",
+        }
+    )
+    return Res(code=200, message="任务已继续")
+
+
+@router.post(
+    "/autopilot-cancel",
+    response_model=Res,
+    summary="取消挂机任务",
+)
+async def autopilot_cancel(project_id: int):
+    """取消一键挂机任务"""
+    task_info = _autopilot_tasks.get(project_id)
+    if not task_info:
+        return Res(code=404, message="没有正在运行的挂机任务")
+
+    task_info["cancel_event"].set()
+    # 如果暂停中，也要唤醒让它退出
+    task_info["resume_event"].set()
+    logger.info(f"挂机任务取消信号已发送: project_id={project_id}")
+    return Res(code=200, message="取消信号已发送")
+
+
+# ---- 一键挂机核心逻辑 ----
+
+
+async def _autopilot_wait_resume(
+    project_id: int,
+    pause_event: threading.Event,
+    resume_event: threading.Event,
+    cancel_event: threading.Event,
+) -> bool:
+    """
+    检查是否暂停，如果暂停则等待恢复。
+    返回 True 表示可以继续，False 表示已取消。
+    """
+    if cancel_event.is_set():
+        return False
+
+    if pause_event.is_set():
+        await manager.broadcast(
+            {
+                "event": "autopilot_paused",
+                "project_id": project_id,
+                "log": "⏸️ 任务已暂停，等待用户继续...",
+            }
+        )
+        # 在线程池中等待恢复信号
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, resume_event.wait)
+        if cancel_event.is_set():
+            return False
+        await manager.broadcast(
+            {
+                "event": "autopilot_resumed",
+                "project_id": project_id,
+                "log": "▶️ 任务已恢复",
+            }
+        )
+    return True
+
+
+async def _autopilot_llm_single_chapter(
+    project_id: int,
+    chapter_id: int,
+    cancel_event: threading.Event,
+) -> bool:
+    """
+    对单个章节执行 LLM 解析。
+    复用现有的 _process_single_chapter_sync 逻辑。
+    返回 True=成功, False=失败或取消。
+    """
+    broadcast_queue: list = []
+    done_counter = {"done": 0}
+
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(
+        None,
+        _process_single_chapter_sync,
+        project_id,
+        chapter_id,
+        0,  # idx
+        1,  # total
+        cancel_event,
+        done_counter,
+        broadcast_queue,
+    )
+
+    success = False
+    for msg in broadcast_queue:
+        # 改写事件名称为 autopilot_ 前缀
+        original_event = msg.get("event", "")
+        if original_event == "batch_llm_progress":
+            msg["event"] = "autopilot_llm_progress"
+            if msg.get("status") == "done":
+                success = True
+        elif original_event == "batch_llm_log":
+            msg["event"] = "autopilot_llm_log"
+        await manager.broadcast(msg)
+
+    return success
+
+
+async def _autopilot_tts_single_chapter(
+    project_id: int,
+    chapter_id: int,
+    speed: float,
+    cancel_event: threading.Event,
+) -> bool:
+    """
+    对单个章节执行 TTS 配音。
+    返回 True=成功（所有台词配音完成）, False=有失败。
+    """
+    db = SessionLocal()
+    has_failure = False
+    try:
+        services = _get_services(db)
+        line_svc = services["line"]
+        role_svc = services["role"]
+        voice_svc = services["voice"]
+        emotion_svc = services["emotion"]
+        strength_svc = services["strength"]
+        project_svc = services["project"]
+
+        project = project_svc.get_project(project_id)
+        lines = line_svc.get_all_lines(chapter_id)
+        valid_lines = [l for l in lines if l.role_id is not None]
+
+        await manager.broadcast(
+            {
+                "event": "autopilot_tts_chapter_start",
+                "project_id": project_id,
+                "chapter_id": chapter_id,
+                "line_count": len(valid_lines),
+                "log": f"🎙️ 章节 {chapter_id} 开始配音，共 {len(valid_lines)} 条台词",
+            }
+        )
+
+        done_count = 0
+        for line_idx, line in enumerate(valid_lines):
+            if cancel_event.is_set():
+                return False
+
+            try:
+                role = role_svc.get_role(line.role_id)
+                if not role or not role.default_voice_id:
+                    await manager.broadcast(
+                        {
+                            "event": "autopilot_tts_log",
+                            "project_id": project_id,
+                            "chapter_id": chapter_id,
+                            "log": f"⚠️ 台词 {line.id} 角色未绑定音色，跳过",
+                        }
+                    )
+                    done_count += 1
+                    continue
+
+                voice = voice_svc.get_voice(role.default_voice_id)
+                reference_path = voice.reference_path
+
+                emotion = (
+                    emotion_svc.get_emotion(line.emotion_id)
+                    if line.emotion_id
+                    else None
+                )
+                strength = (
+                    strength_svc.get_strength(line.strength_id)
+                    if line.strength_id
+                    else None
+                )
+                emo_vector = emotion_text_to_vector(
+                    emotion.name if emotion else "平静",
+                    strength.name if strength else "中等",
+                )
+
+                await manager.broadcast(
+                    {
+                        "event": "autopilot_tts_line",
+                        "project_id": project_id,
+                        "chapter_id": chapter_id,
+                        "line_index": line_idx + 1,
+                        "line_total": len(valid_lines),
+                        "log": f"🔊 [{line_idx+1}/{len(valid_lines)}] {line.text_content[:30]}...",
+                    }
+                )
+
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(
+                    None,
+                    line_svc.generate_audio,
+                    reference_path,
+                    project.tts_provider_id,
+                    line.text_content,
+                    None,
+                    emo_vector,
+                    line.audio_path,
+                )
+
+                if speed != 1.0 and line.audio_path and os.path.exists(line.audio_path):
+                    line_svc.process_audio_ffmpeg(line.audio_path, speed=speed)
+
+                line_svc.update_line(line.id, {"status": "done"})
+                done_count += 1
+
+            except Exception as e:
+                done_count += 1
+                has_failure = True
+                logger.error(f"TTS生成失败: {e}")
+                try:
+                    line_svc.update_line(line.id, {"status": "failed"})
+                except Exception:
+                    pass
+                await manager.broadcast(
+                    {
+                        "event": "autopilot_tts_log",
+                        "project_id": project_id,
+                        "chapter_id": chapter_id,
+                        "log": f"❌ 台词 {line.id} 配音失败: {e}",
+                    }
+                )
+
+        await manager.broadcast(
+            {
+                "event": "autopilot_tts_chapter_done",
+                "project_id": project_id,
+                "chapter_id": chapter_id,
+                "log": f"✅ 章节 {chapter_id} 配音完成 ({done_count}/{len(valid_lines)})",
+            }
+        )
+        return not has_failure
+
+    except Exception as e:
+        logger.error(f"挂机TTS异常: {e}\n{traceback.format_exc()}")
+        await manager.broadcast(
+            {
+                "event": "autopilot_tts_log",
+                "project_id": project_id,
+                "chapter_id": chapter_id,
+                "log": f"❌ 章节 {chapter_id} 配音异常: {e}",
+            }
+        )
+        return False
+    finally:
+        db.close()
+
+
+async def _autopilot_smart_voice_match(project_id: int) -> dict:
+    """
+    对项目执行智能音色匹配（为未绑定音色的角色自动分配）。
+    返回 {"success": bool, "unmatched_roles": [...], "matched": [...]}
+    """
+    db = SessionLocal()
+    try:
+        services = _get_services(db)
+        role_svc = services["role"]
+        voice_svc = services["voice"]
+        project_svc = services["project"]
+        chapter_svc = services["chapter"]
+
+        project = project_svc.get_project(project_id)
+        roles = role_svc.get_all_roles(project_id)
+
+        # 未绑定音色的角色
+        unbound_roles = [r for r in roles if r.default_voice_id is None]
+        if not unbound_roles:
+            return {"success": True, "unmatched_roles": [], "matched": []}
+
+        unbound_names = [r.name for r in unbound_roles]
+
+        # 获取所有音色
+        voices = voice_svc.get_all_voices(project.tts_provider_id)
+        voice_names = [{"name": v.name, "description": v.description} for v in voices]
+        voice_id_map = {v.name: v.id for v in voices}
+
+        # 使用项目的 LLM 进行智能匹配
+        from py.core.prompts import get_add_smart_role_and_voice
+        from py.core.llm_engine import LLMEngine
+        from py.repositories.llm_provider_repository import LLMProviderRepository
+
+        llm_repo = LLMProviderRepository(db)
+        llm_provider = llm_repo.get_by_id(project.llm_provider_id)
+        llm = LLMEngine(
+            llm_provider.api_key,
+            llm_provider.api_base_url,
+            project.llm_model,
+            llm_provider.custom_params,
+        )
+
+        # 获取项目下所有章节的首章文本作为上下文（简化处理）
+        all_chapters = chapter_svc.get_all_chapters(project_id)
+        # 拿第一个有内容的章节作为上下文
+        context_text = ""
+        for ch_info in all_chapters[:5]:  # 最多看前5章
+            ch = chapter_svc.get_chapter(ch_info["id"])
+            if ch and ch.text_content:
+                context_text += ch.text_content[:500] + "\n"
+            if len(context_text) > 2000:
+                break
+
+        prompt = get_add_smart_role_and_voice(context_text, unbound_names, voice_names)
+        result = llm.generate_smart_text(prompt)
+        parse_data = llm.save_load_json(result)
+
+        matched = []
+        still_unmatched = list(unbound_names)
+
+        from py.repositories.role_repository import RoleRepository
+
+        role_repo = RoleRepository(db)
+
+        if parse_data:
+            for item in parse_data:
+                role_name = item.get("role_name", "")
+                voice_name = item.get("voice_name", "")
+                if role_name and voice_name and voice_name in voice_id_map:
+                    role = role_repo.get_by_name(role_name, project_id)
+                    if role:
+                        role_repo.update(
+                            role.id,
+                            {"default_voice_id": voice_id_map[voice_name]},
+                        )
+                        matched.append(
+                            {"role_name": role_name, "voice_name": voice_name}
+                        )
+                        if role_name in still_unmatched:
+                            still_unmatched.remove(role_name)
+
+        return {
+            "success": len(still_unmatched) == 0,
+            "unmatched_roles": still_unmatched,
+            "matched": matched,
+        }
+
+    except Exception as e:
+        logger.error(f"智能音色匹配失败: {e}\n{traceback.format_exc()}")
+        return {"success": False, "unmatched_roles": [], "matched": [], "error": str(e)}
+    finally:
+        db.close()
+
+
+def _check_chapter_unbound_roles(project_id: int, chapter_id: int) -> list:
+    """
+    检查某章节的台词中，是否有角色未绑定音色。
+    返回未绑定的角色名称列表。
+    """
+    db = SessionLocal()
+    try:
+        services = _get_services(db)
+        line_svc = services["line"]
+        role_svc = services["role"]
+
+        lines = line_svc.get_all_lines(chapter_id)
+        unbound_role_names = []
+        seen_role_ids = set()
+
+        for line in lines:
+            if line.role_id and line.role_id not in seen_role_ids:
+                seen_role_ids.add(line.role_id)
+                role = role_svc.get_role(line.role_id)
+                if role and not role.default_voice_id:
+                    unbound_role_names.append(role.name)
+
+        return unbound_role_names
+    finally:
+        db.close()
+
+
+async def _do_autopilot(
+    project_id: int,
+    chapter_ids: List[int],
+    concurrency: int,
+    speed: float,
+    voice_match_interval: int,
+    manual_voice_assign: bool,
+    cancel_event: threading.Event,
+    pause_event: threading.Event,
+    resume_event: threading.Event,
+):
+    """
+    一键挂机核心流程（并行流水线模式）：
+    - LLM Producer：并发执行 LLM 解析，完成后将章节放入 tts_queue
+    - TTS Consumer：从 tts_queue 取章节，检查音色后执行 TTS
+    - 两者通过 asyncio.Queue 协作，同时运行
+    - 每 voice_match_interval 章做一次智能音色匹配
+    - 支持暂停/继续/取消
+    """
+    total = len(chapter_ids)
+    llm_done_count = 0
+    tts_done_count = 0
+    # 追踪自上次智能匹配后已处理的章节数
+    chapters_since_last_match = 0
+    # LLM 完成后放入此队列，TTS Consumer 从中取
+    # 队列元素: (chapter_id, ch_idx, llm_success)
+    tts_queue: asyncio.Queue = asyncio.Queue()
+    # 用于音色匹配的锁（防止多个 LLM worker 同时触发匹配）
+    voice_match_lock = asyncio.Lock()
+
+    await manager.broadcast(
+        {
+            "event": "autopilot_start",
+            "project_id": project_id,
+            "total": total,
+            "log": f"🚀 一键挂机已启动（并行流水线）：共 {total} 章，LLM并发数 {concurrency}，每 {voice_match_interval} 章匹配音色",
+        }
+    )
+
+    # ---- LLM Producer：并发执行 LLM 解析 ----
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def _llm_worker(chapter_id: int, ch_idx: int):
+        """单个 LLM 任务：解析完成后放入 TTS 队列"""
+        nonlocal llm_done_count, chapters_since_last_match
+
+        # 检查暂停/取消
+        can_continue = await _autopilot_wait_resume(
+            project_id, pause_event, resume_event, cancel_event
+        )
+        if not can_continue:
+            return
+
+        async with semaphore:
+            if cancel_event.is_set():
+                return
+
+            await manager.broadcast(
+                {
+                    "event": "autopilot_progress",
+                    "project_id": project_id,
+                    "phase": "llm",
+                    "chapter_id": chapter_id,
+                    "llm_done": llm_done_count,
+                    "tts_done": tts_done_count,
+                    "total": total,
+                    "log": f"📖 [{ch_idx+1}/{total}] 章节 {chapter_id} 开始 LLM 解析",
+                }
+            )
+
+            llm_success = await _autopilot_llm_single_chapter(
+                project_id, chapter_id, cancel_event
+            )
+
+            if cancel_event.is_set():
+                return
+
+            if llm_success:
+                llm_done_count += 1
+                chapters_since_last_match += 1
+
+                await manager.broadcast(
+                    {
+                        "event": "autopilot_progress",
+                        "project_id": project_id,
+                        "phase": "llm_done",
+                        "chapter_id": chapter_id,
+                        "llm_done": llm_done_count,
+                        "tts_done": tts_done_count,
+                        "total": total,
+                        "log": f"✅ [{llm_done_count}/{total}] 章节 {chapter_id} LLM 解析完成",
+                    }
+                )
+
+                # LLM 完成后检查是否需要音色匹配（加锁防止并发冲突）
+                async with voice_match_lock:
+                    await _autopilot_check_voice_match(
+                        project_id,
+                        chapter_id,
+                        chapters_since_last_match,
+                        voice_match_interval,
+                        manual_voice_assign,
+                        pause_event,
+                        resume_event,
+                        cancel_event,
+                    )
+                    if chapters_since_last_match >= voice_match_interval:
+                        chapters_since_last_match = 0
+
+                # 放入 TTS 队列
+                await tts_queue.put((chapter_id, ch_idx, True))
+            else:
+                llm_done_count += 1  # 失败也计入进度
+                await manager.broadcast(
+                    {
+                        "event": "autopilot_progress",
+                        "project_id": project_id,
+                        "phase": "llm_error",
+                        "chapter_id": chapter_id,
+                        "llm_done": llm_done_count,
+                        "tts_done": tts_done_count,
+                        "total": total,
+                        "log": f"❌ 章节 {chapter_id} LLM 解析失败，跳过该章TTS",
+                    }
+                )
+                # 失败也放入队列，标记为失败
+                await tts_queue.put((chapter_id, ch_idx, False))
+
+            await asyncio.sleep(0.1)
+
+    async def _llm_producer():
+        """LLM 生产者：逐章发起 LLM 任务（信号量控制并发）"""
+        tasks = []
+        for ch_idx, chapter_id in enumerate(chapter_ids):
+            if cancel_event.is_set():
+                break
+            task = asyncio.create_task(_llm_worker(chapter_id, ch_idx))
+            tasks.append(task)
+
+        # 等待所有 LLM 任务完成
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 发送结束哨兵，告知 TTS Consumer 所有 LLM 都完成了
+        await tts_queue.put(None)
+
+    # ---- TTS Consumer：从队列取章节执行 TTS ----
+    async def _tts_consumer():
+        """TTS 消费者：串行从队列取章节执行 TTS 配音"""
+        nonlocal tts_done_count
+
+        while True:
+            if cancel_event.is_set():
+                break
+
+            # 从队列获取下一个要配音的章节
+            item = await tts_queue.get()
+
+            # 收到结束哨兵，退出
+            if item is None:
+                break
+
+            chapter_id, ch_idx, llm_success = item
+
+            if cancel_event.is_set():
+                break
+
+            # LLM 失败的章节跳过 TTS
+            if not llm_success:
+                tts_done_count += 1
+                await manager.broadcast(
+                    {
+                        "event": "autopilot_progress",
+                        "project_id": project_id,
+                        "phase": "tts_error",
+                        "chapter_id": chapter_id,
+                        "llm_done": llm_done_count,
+                        "tts_done": tts_done_count,
+                        "total": total,
+                        "log": f"⏭️ 章节 {chapter_id} LLM失败，跳过配音",
+                    }
+                )
+                continue
+
+            # 检查暂停/取消
+            can_continue = await _autopilot_wait_resume(
+                project_id, pause_event, resume_event, cancel_event
+            )
+            if not can_continue:
+                break
+
+            # 检查该章节角色是否都已绑定音色
+            unbound_now = _check_chapter_unbound_roles(project_id, chapter_id)
+            if unbound_now:
+                await manager.broadcast(
+                    {
+                        "event": "autopilot_log",
+                        "project_id": project_id,
+                        "chapter_id": chapter_id,
+                        "log": f"⚠️ 章节 {chapter_id} 有 {len(unbound_now)} 个角色未绑定音色，跳过配音: {', '.join(unbound_now)}",
+                    }
+                )
+                tts_done_count += 1
+                await manager.broadcast(
+                    {
+                        "event": "autopilot_progress",
+                        "project_id": project_id,
+                        "phase": "tts_error",
+                        "chapter_id": chapter_id,
+                        "llm_done": llm_done_count,
+                        "tts_done": tts_done_count,
+                        "total": total,
+                        "log": f"⏭️ 章节 {chapter_id} 角色未绑定音色，已跳过",
+                    }
+                )
+                continue
+
+            # 执行 TTS 配音
+            await manager.broadcast(
+                {
+                    "event": "autopilot_progress",
+                    "project_id": project_id,
+                    "phase": "tts",
+                    "chapter_id": chapter_id,
+                    "llm_done": llm_done_count,
+                    "tts_done": tts_done_count,
+                    "total": total,
+                    "log": f"🎙️ 章节 {chapter_id} 开始 TTS 配音",
+                }
+            )
+
+            tts_success = await _autopilot_tts_single_chapter(
+                project_id, chapter_id, speed, cancel_event
+            )
+            tts_done_count += 1
+
+            await manager.broadcast(
+                {
+                    "event": "autopilot_progress",
+                    "project_id": project_id,
+                    "phase": "tts_done" if tts_success else "tts_error",
+                    "chapter_id": chapter_id,
+                    "llm_done": llm_done_count,
+                    "tts_done": tts_done_count,
+                    "total": total,
+                    "log": f"{'✅' if tts_success else '⚠️'} 章节 {chapter_id} 配音{'完成' if tts_success else '有失败项'}",
+                }
+            )
+
+    # ---- 并行运行 LLM Producer 和 TTS Consumer ----
+    await asyncio.gather(_llm_producer(), _tts_consumer())
+
+    # ---- 完成 ----
+    if cancel_event.is_set():
+        await manager.broadcast(
+            {
+                "event": "autopilot_complete",
+                "project_id": project_id,
+                "cancelled": True,
+                "llm_done": llm_done_count,
+                "tts_done": tts_done_count,
+                "total": total,
+                "log": f"⏹️ 一键挂机已取消！LLM完成 {llm_done_count}/{total}，TTS完成 {tts_done_count}/{total}",
+            }
+        )
+    else:
+        await manager.broadcast(
+            {
+                "event": "autopilot_complete",
+                "project_id": project_id,
+                "cancelled": False,
+                "llm_done": llm_done_count,
+                "tts_done": tts_done_count,
+                "total": total,
+                "log": f"🎉 一键挂机全部完成！LLM完成 {llm_done_count}/{total}，TTS完成 {tts_done_count}/{total}",
+            }
+        )
+
+
+async def _autopilot_check_voice_match(
+    project_id: int,
+    chapter_id: int,
+    chapters_since_last_match: int,
+    voice_match_interval: int,
+    manual_voice_assign: bool,
+    pause_event: threading.Event,
+    resume_event: threading.Event,
+    cancel_event: threading.Event,
+):
+    """
+    检查是否需要进行音色匹配（从 _do_autopilot 中抽取出来的逻辑）。
+    在 LLM 完成后、放入 TTS 队列前调用。
+    """
+    need_voice_match = chapters_since_last_match >= voice_match_interval
+
+    if not (need_voice_match or manual_voice_assign):
+        return
+
+    # 检查是否有未绑定音色的角色
+    unbound = _check_chapter_unbound_roles(project_id, chapter_id)
+
+    if not unbound:
+        return
+
+    if manual_voice_assign:
+        # 手动模式：直接暂停
+        await manager.broadcast(
+            {
+                "event": "autopilot_voice_needed",
+                "project_id": project_id,
+                "chapter_id": chapter_id,
+                "unbound_roles": unbound,
+                "log": f"⏸️ 发现 {len(unbound)} 个角色未绑定音色: {', '.join(unbound)}，请手动分配后继续",
+            }
+        )
+        pause_event.set()
+        resume_event.clear()
+        # 等待用户继续
+        await _autopilot_wait_resume(
+            project_id, pause_event, resume_event, cancel_event
+        )
+    else:
+        # 自动智能匹配
+        await manager.broadcast(
+            {
+                "event": "autopilot_log",
+                "project_id": project_id,
+                "log": f"🤖 检测到 {len(unbound)} 个新角色未绑定音色，开始智能匹配...",
+            }
+        )
+
+        match_result = await _autopilot_smart_voice_match(project_id)
+
+        if match_result["matched"]:
+            matched_str = ", ".join(
+                [f"{m['role_name']}→{m['voice_name']}" for m in match_result["matched"]]
+            )
+            await manager.broadcast(
+                {
+                    "event": "autopilot_voice_matched",
+                    "project_id": project_id,
+                    "matched": match_result["matched"],
+                    "log": f"✅ 智能匹配成功: {matched_str}",
+                }
+            )
+
+        if match_result["unmatched_roles"]:
+            # 匹配失败，暂停让用户手动分配
+            await manager.broadcast(
+                {
+                    "event": "autopilot_voice_needed",
+                    "project_id": project_id,
+                    "chapter_id": chapter_id,
+                    "unbound_roles": match_result["unmatched_roles"],
+                    "log": f"⚠️ 仍有 {len(match_result['unmatched_roles'])} 个角色未匹配到音色: {', '.join(match_result['unmatched_roles'])}，请手动分配后继续",
+                }
+            )
+            pause_event.set()
+            resume_event.clear()
+            await _autopilot_wait_resume(
+                project_id, pause_event, resume_event, cancel_event
+            )

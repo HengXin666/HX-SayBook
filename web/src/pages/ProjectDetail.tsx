@@ -10,6 +10,7 @@ import {
   PlusOutlined,
   ReloadOutlined,
   RobotOutlined,
+  RocketOutlined,
   SearchOutlined,
   SettingOutlined,
   SoundOutlined,
@@ -45,6 +46,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { chapterApi, emotionApi, lineApi, llmProviderApi, projectApi, promptApi, roleApi, strengthApi, ttsProviderApi, voiceApi } from '../api';
+import AutoPilotModal from '../components/AutoPilotModal';
 import BatchLLMModal from '../components/BatchLLMModal';
 import BatchTTSModal from '../components/BatchTTSModal';
 import SpeedControl from '../components/SpeedControl';
@@ -141,11 +143,15 @@ export default function ProjectDetail() {
   // ==================== 批量操作弹窗 ====================
   const [batchLLMModalOpen, setBatchLLMModalOpen] = useState(false);
   const [batchTTSModalOpen, setBatchTTSModalOpen] = useState(false);
+  const [autoPilotModalOpen, setAutoPilotModalOpen] = useState(false);
   // 批量LLM后台运行状态（弹窗关闭时也能显示进度）
   const [batchLLMRunning, setBatchLLMRunning] = useState(false);
   const [batchLLMProgress, setBatchLLMProgress] = useState(0);
   const [batchLLMCurrent, setBatchLLMCurrent] = useState(0);
   const [batchLLMTotal, setBatchLLMTotal] = useState(0);
+  // 一键挂机后台运行状态
+  const [autoPilotRunning, setAutoPilotRunning] = useState(false);
+  const [autoPilotProgress, setAutoPilotProgress] = useState(0);
 
   // ==================== 合并导出弹窗 ====================
   const [mergeModalOpen, setMergeModalOpen] = useState(false);
@@ -1434,6 +1440,39 @@ export default function ProjectDetail() {
             <Text style={{ color: '#818cf8', fontSize: 12 }}>点击查看详情 →</Text>
           </div>
         )}
+        {/* 一键挂机后台运行提示条 */}
+        {autoPilotRunning && !autoPilotModalOpen && (
+          <div
+            style={{
+              background: 'linear-gradient(90deg, #422006, #78350f)',
+              borderRadius: 8,
+              padding: '8px 16px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              border: '1px solid #f59e0b',
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}
+            onClick={() => setAutoPilotModalOpen(true)}
+          >
+            <Space>
+              <RocketOutlined style={{ color: '#fbbf24', fontSize: 16 }} spin />
+              <Text style={{ color: '#fef3c7', fontSize: 13 }}>
+                一键挂机进行中
+              </Text>
+              <Progress
+                percent={autoPilotProgress}
+                size="small"
+                style={{ width: 120, margin: 0 }}
+                strokeColor="#f59e0b"
+                trailColor="#422006"
+                format={() => `${autoPilotProgress}%`}
+              />
+            </Space>
+            <Text style={{ color: '#fbbf24', fontSize: 12 }}>点击查看详情 →</Text>
+          </div>
+        )}
         {!activeChapterId ? (
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <Empty description="请从左侧选择一个章节" />
@@ -1498,6 +1537,14 @@ export default function ProjectDetail() {
                     onClick={() => setBatchTTSModalOpen(true)}
                   >
                     批量配音
+                  </Button>
+                  <Button
+                    size="small"
+                    icon={<RocketOutlined />}
+                    style={{ background: '#f59e0b', color: '#fff', borderColor: '#f59e0b' }}
+                    onClick={() => setAutoPilotModalOpen(true)}
+                  >
+                    一键挂机
                   </Button>
                   <Button
                     size="small"
@@ -1885,6 +1932,22 @@ export default function ProjectDetail() {
         onComplete={() => {
           loadLines();
         }}
+      />
+
+      {/* 一键挂机弹窗 */}
+      <AutoPilotModal
+        open={autoPilotModalOpen}
+        onClose={() => setAutoPilotModalOpen(false)}
+        projectId={projectId}
+        onComplete={() => {
+          loadChapters(1, chapterKeyword);
+          loadLines();
+          loadRoles();
+        }}
+        onRunningChange={useCallback((running: boolean, progress: number) => {
+          setAutoPilotRunning(running);
+          setAutoPilotProgress(progress);
+        }, [])}
       />
 
       {/* 合并导出弹窗 */}

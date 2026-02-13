@@ -1,4 +1,4 @@
-import type { BatchLLMRequest, BatchTTSRequest, Chapter, ChapterBrief, ChapterPageResponse, Emotion, Line, LLMProvider, Project, Prompt, Res, Role, RoleWithLineCount, Strength, TTSProvider, Voice, VoiceDebugRequest } from '../types';
+import type { AutopilotRequest, AutopilotStatus, BatchLLMRequest, BatchTTSRequest, Chapter, ChapterBrief, ChapterPageResponse, Emotion, Line, LLMProvider, Project, Prompt, Res, Role, RoleWithLineCount, Strength, TTSProvider, Voice, VoiceDebugRequest } from '../types';
 import api from './client';
 
 // ============================================================
@@ -143,4 +143,10 @@ export const batchApi = {
   voiceDebug: (data: VoiceDebugRequest) => api.post<unknown, Res<{ audio_url: string; voice_name: string; emotion: string; strength: string; speed: number }>>('/batch/voice-debug', data),
   adjustSpeed: (lineId: number, speed: number) => api.post<unknown, Res>('/batch/adjust-speed', { line_id: lineId, speed }),
   batchAdjustSpeed: (chapterId: number, speed: number) => api.post<unknown, Res>('/batch/batch-adjust-speed', { chapter_id: chapterId, speed }),
+  /** 一键挂机 */
+  autopilotStart: (data: AutopilotRequest) => api.post<unknown, Res>('/batch/autopilot-start', data),
+  autopilotStatus: (projectId: number) => api.get<unknown, Res<AutopilotStatus>>('/batch/autopilot-status', { params: { project_id: projectId } }),
+  autopilotPause: (projectId: number) => api.post<unknown, Res>('/batch/autopilot-pause', null, { params: { project_id: projectId } }),
+  autopilotResume: (projectId: number) => api.post<unknown, Res>('/batch/autopilot-resume', null, { params: { project_id: projectId } }),
+  autopilotCancel: (projectId: number) => api.post<unknown, Res>('/batch/autopilot-cancel', null, { params: { project_id: projectId } }),
 };

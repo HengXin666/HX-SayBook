@@ -186,3 +186,20 @@ export interface VoiceDebugRequest {
   strength_name?: string;
   speed?: number;
 }
+
+/** 一键挂机请求 */
+export interface AutopilotRequest {
+  project_id: number;
+  chapter_ids: number[];
+  concurrency?: number;
+  speed?: number;
+  voice_match_interval?: number;
+  manual_voice_assign?: boolean;
+}
+
+/** 一键挂机状态响应 */
+export interface AutopilotStatus {
+  running: boolean;
+  paused: boolean;
+  cancelled: boolean;
+}
