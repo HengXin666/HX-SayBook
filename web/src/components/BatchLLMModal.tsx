@@ -1,4 +1,4 @@
-import { RobotOutlined } from '@ant-design/icons';
+import { RobotOutlined, StopOutlined } from '@ant-design/icons';
 import { Checkbox, InputNumber, Modal, Progress, Space, Tag, Typography, message } from 'antd';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { batchApi } from '../api';
@@ -19,18 +19,20 @@ interface BatchLLMModalProps {
 interface ChapterStatus {
   id: number;
   title: string;
-  status: 'pending' | 'processing' | 'done' | 'error' | 'skipped';
+  status: 'pending' | 'processing' | 'done' | 'error' | 'skipped' | 'cancelled';
 }
 
 export default function BatchLLMModal({ open, onClose, projectId, chapters, onComplete }: BatchLLMModalProps) {
   const { subscribe } = useWebSocket();
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [running, setRunning] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [progress, setProgress] = useState(0);
   const [current, setCurrent] = useState(0);
   const [total, setTotal] = useState(0);
   const [chapterStatuses, setChapterStatuses] = useState<ChapterStatus[]>([]);
+  const [concurrency, setConcurrency] = useState(1);
 
   // 初始化选中所有有内容的章节
   useEffect(() => {
@@ -41,6 +43,7 @@ export default function BatchLLMModal({ open, onClose, projectId, chapters, onCo
       setProgress(0);
       setCurrent(0);
       setTotal(0);
+      setCancelling(false);
       setChapterStatuses(chapters.map((c) => ({ id: c.id, title: c.title, status: 'pending' })));
     }
   }, [open, chapters]);
@@ -74,7 +77,12 @@ export default function BatchLLMModal({ open, onClose, projectId, chapters, onCo
         setLogs((prev) => [...prev, data.log as string]);
         setProgress(100);
         setRunning(false);
-        message.success('批量LLM解析全部完成！');
+        setCancelling(false);
+        if (data.cancelled) {
+          message.warning('批量LLM解析已取消');
+        } else {
+          message.success('批量LLM解析全部完成！');
+        }
         onComplete?.();
       }),
     ];
@@ -88,7 +96,8 @@ export default function BatchLLMModal({ open, onClose, projectId, chapters, onCo
       return;
     }
     setRunning(true);
-    setLogs([`🚀 开始批量LLM解析，共 ${selectedIds.length} 个章节`]);
+    setCancelling(false);
+    setLogs([`🚀 开始批量LLM解析，共 ${selectedIds.length} 个章节，并发数: ${concurrency}`]);
     setProgress(0);
     setCurrent(0);
     setTotal(selectedIds.length);
@@ -99,7 +108,7 @@ export default function BatchLLMModal({ open, onClose, projectId, chapters, onCo
     );
 
     try {
-      const res = await batchApi.llmParse({ project_id: projectId, chapter_ids: selectedIds });
+      const res = await batchApi.llmParse({ project_id: projectId, chapter_ids: selectedIds, concurrency });
       if (res.code !== 200) {
         message.error(res.message || '启动失败');
         setRunning(false);
@@ -108,7 +117,24 @@ export default function BatchLLMModal({ open, onClose, projectId, chapters, onCo
       message.error('请求失败');
       setRunning(false);
     }
-  }, [selectedIds, projectId]);
+  }, [selectedIds, projectId, concurrency]);
+
+  const handleCancel = useCallback(async () => {
+    setCancelling(true);
+    setLogs((prev) => [...prev, '⏳ 正在取消任务...']);
+    try {
+      const res = await batchApi.llmCancel(projectId);
+      if (res.code === 200) {
+        message.info('取消信号已发送，等待当前章节处理完毕后停止');
+      } else {
+        message.warning(res.message || '取消失败');
+        setCancelling(false);
+      }
+    } catch {
+      message.error('取消请求失败');
+      setCancelling(false);
+    }
+  }, [projectId]);
 
   // 范围选择
   const [rangeStart, setRangeStart] = useState<number>(1);
@@ -158,6 +184,7 @@ export default function BatchLLMModal({ open, onClose, projectId, chapters, onCo
     done: 'success',
     error: 'error',
     skipped: 'warning',
+    cancelled: 'warning',
   };
 
   const statusLabel: Record<string, string> = {
@@ -166,6 +193,7 @@ export default function BatchLLMModal({ open, onClose, projectId, chapters, onCo
     done: '已完成',
     error: '失败',
     skipped: '已跳过',
+    cancelled: '已取消',
   };
 
   return (
@@ -198,6 +226,27 @@ export default function BatchLLMModal({ open, onClose, projectId, chapters, onCo
               关闭
             </button>
           )}
+          {running && (
+            <button
+              onClick={handleCancel}
+              disabled={cancelling}
+              style={{
+                padding: '6px 16px',
+                background: cancelling ? '#45475a' : '#ef4444',
+                border: 'none',
+                borderRadius: 6,
+                color: '#fff',
+                cursor: cancelling ? 'not-allowed' : 'pointer',
+                fontWeight: 500,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+              }}
+            >
+              <StopOutlined />
+              {cancelling ? '取消中...' : '取消任务'}
+            </button>
+          )}
           <button
             onClick={handleStart}
             disabled={running || selectedIds.length === 0}
@@ -222,12 +271,29 @@ export default function BatchLLMModal({ open, onClose, projectId, chapters, onCo
         <div style={{ marginBottom: 16 }}>
           <Progress
             percent={progress}
-            status={progress >= 100 ? 'success' : 'active'}
+            status={cancelling ? 'exception' : progress >= 100 ? 'success' : 'active'}
             format={() => `${current}/${total}`}
-            strokeColor="#6366f1"
+            strokeColor={cancelling ? '#ef4444' : '#6366f1'}
           />
         </div>
       )}
+
+      {/* 并发数配置 */}
+      <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8, background: '#181825', borderRadius: 8, padding: '8px 12px', border: '1px solid #313244' }}>
+        <Text style={{ color: '#a6adc8', fontSize: 12, whiteSpace: 'nowrap' }}>并发数</Text>
+        <InputNumber
+          size="small"
+          min={1}
+          max={10}
+          value={concurrency}
+          onChange={(v) => setConcurrency(v ?? 1)}
+          style={{ width: 80 }}
+          disabled={running}
+        />
+        <Text style={{ color: '#585b70', fontSize: 11 }}>
+          同时解析的章节数 (1~10)，并发数越大速度越快，但可能增加 LLM API 压力
+        </Text>
+      </div>
 
       {/* 章节选择 */}
       <div style={{ marginBottom: 16 }}>

@@ -9,12 +9,14 @@ class RoleCreateDTO(BaseModel):
     project_id: int
     id: Optional[int] = None
     default_voice_id: Optional[int] = None
+    description: Optional[str] = None
+
 
 class RoleResponseDTO(BaseModel):
     name: str
     project_id: int
     id: Optional[int] = None
     default_voice_id: Optional[int] = None
+    description: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
-

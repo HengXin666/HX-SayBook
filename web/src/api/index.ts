@@ -61,7 +61,7 @@ export const lineApi = {
 export const roleApi = {
   getByProject: (projectId: number) => api.get<unknown, Res<Role[]>>(`/roles/project/${projectId}`),
   get: (id: number) => api.get<unknown, Res<Role>>(`/roles/${id}`),
-  create: (data: Partial<Role>) => api.post<unknown, Res<Role>>('/roles/', data),
+  create: (data: Partial<Role>) => api.post<unknown, Res<Role>>('/roles', data),
   update: (id: number, data: Partial<Role>) => api.put<unknown, Res>(`/roles/${id}`, data),
   delete: (id: number) => api.delete<unknown, Res>(`/roles/${id}`),
   /** 随机分配路人语音池中的音色给未绑定的角色 */
@@ -132,6 +132,7 @@ export const promptApi = {
 // ============================================================
 export const batchApi = {
   llmParse: (data: BatchLLMRequest) => api.post<unknown, Res>('/batch/llm-parse', data),
+  llmCancel: (projectId: number) => api.post<unknown, Res>('/batch/llm-cancel', null, { params: { project_id: projectId } }),
   ttsGenerate: (data: BatchTTSRequest) => api.post<unknown, Res>('/batch/tts-generate', data),
   voicePreview: (data: VoiceDebugRequest) => api.post<unknown, Res<{ audio_url: string }>>('/batch/voice-preview', data),
   voiceDebug: (data: VoiceDebugRequest) => api.post<unknown, Res<{ audio_url: string; voice_name: string; emotion: string; strength: string; speed: number }>>('/batch/voice-debug', data),

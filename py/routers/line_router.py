@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Body, Request, Query
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from py.core.config import getConfigPath
@@ -63,6 +64,18 @@ def get_voice_service(db: Session = Depends(get_db)) -> VoiceService:
 def get_role_service(db: Session = Depends(get_db)) -> RoleService:
     repository = RoleRepository(db)
     return RoleService(repository)
+
+
+@router.get(
+    "/audio-file",
+    summary="获取音频文件",
+    description="根据文件路径返回音频文件，用于前端播放试听",
+)
+def get_audio_file(path: str):
+    """根据路径返回音频文件"""
+    if not path or not os.path.exists(path):
+        raise HTTPException(status_code=404, detail=f"音频文件不存在: {path}")
+    return FileResponse(path, media_type="audio/wav")
 
 
 @router.post(

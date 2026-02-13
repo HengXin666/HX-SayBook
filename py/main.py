@@ -118,6 +118,7 @@ def _run_migrations():
     _add_column_if_missing("projects", "is_precise_fill", "INTEGER DEFAULT 0")
     _add_column_if_missing("projects", "project_root_path", "TEXT")
     _add_column_if_missing("projects", "passerby_voice_pool", "TEXT")
+    _add_column_if_missing("roles", "description", "TEXT")
 
     # custom_params 需要特殊处理：填入默认值
     with engine.begin() as conn:
