@@ -79,6 +79,14 @@ class ChapterService:
         """查询某个章节在项目有序列表中的位置（从0开始的索引）"""
         return self.repository.get_position(project_id, chapter_id)
 
+    def get_ids_by_range(
+        self, project_id: int, start: int, end: int, has_content_only: bool = False
+    ) -> list[int]:
+        """按排序后的位置范围获取章节 ID 列表（start/end 均为 1-based）"""
+        return self.repository.get_ids_by_range(
+            project_id, start, end, has_content_only
+        )
+
     def update_chapter(self, chapter_id: int, data: dict) -> bool:
         """更新章节
         - 可以只更新部分字段

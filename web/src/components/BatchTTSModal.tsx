@@ -1,9 +1,10 @@
 import { SoundOutlined } from '@ant-design/icons';
 import { Checkbox, InputNumber, Modal, Progress, Slider, Space, Tag, Typography, message } from 'antd';
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { batchApi } from '../api';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { batchApi, chapterApi } from '../api';
+import { useChapterLazyList } from '../hooks/useChapterLazyList';
 import { useWebSocket } from '../hooks/useWebSocket';
-import type { ChapterBrief, WSEvent } from '../types';
+import type { WSEvent } from '../types';
 import LogPanel from './LogPanel';
 
 const { Text } = Typography;
@@ -12,7 +13,6 @@ interface BatchTTSModalProps {
   open: boolean;
   onClose: () => void;
   projectId: number;
-  chapters: ChapterBrief[];
   onComplete?: () => void;
 }
 
@@ -24,7 +24,7 @@ interface ChapterStatus {
   doneCount?: number;
 }
 
-export default function BatchTTSModal({ open, onClose, projectId, chapters, onComplete }: BatchTTSModalProps) {
+export default function BatchTTSModal({ open, onClose, projectId, onComplete }: BatchTTSModalProps) {
   const { subscribe } = useWebSocket();
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [running, setRunning] = useState(false);
@@ -33,14 +33,18 @@ export default function BatchTTSModal({ open, onClose, projectId, chapters, onCo
   const [overallDone, setOverallDone] = useState(0);
   const [overallTotal, setOverallTotal] = useState(0);
   const [speed, setSpeed] = useState(1.0);
-  const [chapterStatuses, setChapterStatuses] = useState<ChapterStatus[]>([]);
+  const [chapterStatuses, setChapterStatuses] = useState<Map<number, ChapterStatus>>(new Map());
   const [currentChapterIdx, setCurrentChapterIdx] = useState(0);
   const [totalChapters, setTotalChapters] = useState(0);
+
+  // 使用懒加载 Hook
+  const lazyList = useChapterLazyList({ projectId });
 
   // 初始化
   useEffect(() => {
     if (open) {
-      setSelectedIds(chapters.map((c) => c.id));
+      lazyList.init();
+      setSelectedIds([]);
       setLogs([]);
       setOverallProgress(0);
       setOverallDone(0);
@@ -48,9 +52,31 @@ export default function BatchTTSModal({ open, onClose, projectId, chapters, onCo
       setSpeed(1.0);
       setCurrentChapterIdx(0);
       setTotalChapters(0);
-      setChapterStatuses(chapters.map((c) => ({ id: c.id, title: c.title, status: 'pending' })));
+      setChapterStatuses(new Map());
     }
-  }, [open, chapters]);
+  }, [open, projectId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 懒加载列表加载后，自动选中新加载的章节（首次时全选）
+  const firstLoadRef = useRef(true);
+  useEffect(() => {
+    if (open && lazyList.chapters.length > 0 && !running) {
+      const newIds = lazyList.chapters.map((c) => c.id);
+      setSelectedIds(prev => {
+        const combined = new Set([...prev, ...newIds]);
+        return Array.from(combined);
+      });
+      if (firstLoadRef.current) {
+        firstLoadRef.current = false;
+      }
+    }
+  }, [lazyList.chapters]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 重置 firstLoadRef
+  useEffect(() => {
+    if (open) {
+      firstLoadRef.current = true;
+    }
+  }, [open]);
 
   // 监听 WebSocket 事件
   useEffect(() => {
@@ -68,9 +94,18 @@ export default function BatchTTSModal({ open, onClose, projectId, chapters, onCo
         const chapterId = data.chapter_id as number;
         setLogs((prev) => [...prev, data.log as string]);
         setCurrentChapterIdx(data.chapter_index as number);
-        setChapterStatuses((prev) =>
-          prev.map((cs) => (cs.id === chapterId ? { ...cs, status: 'processing', lineCount: data.line_count as number, doneCount: 0 } : cs)),
-        );
+        setChapterStatuses((prev) => {
+          const next = new Map(prev);
+          const existing = next.get(chapterId);
+          next.set(chapterId, {
+            id: chapterId,
+            title: existing?.title || `章节 ${chapterId}`,
+            status: 'processing',
+            lineCount: data.line_count as number,
+            doneCount: 0,
+          });
+          return next;
+        });
       }),
       subscribe('batch_tts_line_progress', (data: WSEvent) => {
         if (data.project_id !== projectId) return;
@@ -79,24 +114,31 @@ export default function BatchTTSModal({ open, onClose, projectId, chapters, onCo
         setOverallDone(data.overall_done as number);
         setOverallTotal(data.overall_total as number);
 
-        // 更新行状态
         const chapterId = data.chapter_id as number;
         const lineStatus = data.status as string;
         if (lineStatus === 'done' || lineStatus === 'failed') {
-          setChapterStatuses((prev) =>
-            prev.map((cs) =>
-              cs.id === chapterId ? { ...cs, doneCount: (cs.doneCount || 0) + 1 } : cs,
-            ),
-          );
+          setChapterStatuses((prev) => {
+            const next = new Map(prev);
+            const existing = next.get(chapterId);
+            if (existing) {
+              next.set(chapterId, { ...existing, doneCount: (existing.doneCount || 0) + 1 });
+            }
+            return next;
+          });
         }
       }),
       subscribe('batch_tts_chapter_done', (data: WSEvent) => {
         if (data.project_id !== projectId) return;
         const chapterId = data.chapter_id as number;
         setLogs((prev) => [...prev, data.log as string]);
-        setChapterStatuses((prev) =>
-          prev.map((cs) => (cs.id === chapterId ? { ...cs, status: 'done' } : cs)),
-        );
+        setChapterStatuses((prev) => {
+          const next = new Map(prev);
+          const existing = next.get(chapterId);
+          if (existing) {
+            next.set(chapterId, { ...existing, status: 'done' });
+          }
+          return next;
+        });
       }),
       subscribe('batch_tts_log', (data: WSEvent) => {
         if (data.project_id !== projectId) return;
@@ -126,10 +168,17 @@ export default function BatchTTSModal({ open, onClose, projectId, chapters, onCo
     setOverallDone(0);
     setOverallTotal(0);
 
-    // 重置状态
-    setChapterStatuses((prev) =>
-      prev.map((cs) => ({ ...cs, status: selectedIds.includes(cs.id) ? 'pending' : cs.status })),
-    );
+    // 重置已选章节的状态
+    setChapterStatuses((prev) => {
+      const next = new Map(prev);
+      selectedIds.forEach((id) => {
+        const existing = next.get(id);
+        if (existing) {
+          next.set(id, { ...existing, status: 'pending' });
+        }
+      });
+      return next;
+    });
 
     try {
       const res = await batchApi.ttsGenerate({ project_id: projectId, chapter_ids: selectedIds, speed });
@@ -147,35 +196,55 @@ export default function BatchTTSModal({ open, onClose, projectId, chapters, onCo
   const [rangeStart, setRangeStart] = useState<number>(1);
   const [rangeEnd, setRangeEnd] = useState<number>(1);
 
-  // 排序后的章节列表
-  const sortedChapters = useMemo(() => {
-    return [...chapters].sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0));
-  }, [chapters]);
-
   // 初始化范围
   useEffect(() => {
-    if (open && sortedChapters.length > 0) {
+    if (open && lazyList.total > 0) {
       setRangeStart(1);
-      setRangeEnd(sortedChapters.length);
+      setRangeEnd(lazyList.total);
     }
-  }, [open, sortedChapters.length]);
+  }, [open, lazyList.total]);
 
-  const handleSelectAll = () => setSelectedIds(sortedChapters.map((c) => c.id));
+  const handleSelectAll = () => {
+    const ids = lazyList.chapters.map((c) => c.id);
+    setSelectedIds(prev => {
+      const combined = new Set([...prev, ...ids]);
+      return Array.from(combined);
+    });
+    message.info('已选中当前可见章节。如需全部选中，请使用范围选择。');
+  };
+
   const handleDeselectAll = () => setSelectedIds([]);
 
-  // 按范围选择
-  const handleSelectRange = () => {
+  // 按范围选择：通过后端接口直接获取范围内所有章节 ID
+  const [rangeLoading, setRangeLoading] = useState(false);
+  const handleSelectRange = useCallback(async () => {
     const start = Math.max(1, rangeStart);
-    const end = Math.min(sortedChapters.length, rangeEnd);
+    const end = Math.min(lazyList.total, rangeEnd);
     if (start > end) {
       message.warning('起始章节不能大于结束章节');
       return;
     }
-    const rangeChapters = sortedChapters.slice(start - 1, end);
-    const ids = rangeChapters.map((c) => c.id);
-    setSelectedIds(ids);
-    message.success(`已选中第 ${start} ~ ${end} 章，共 ${ids.length} 个章节`);
-  };
+
+    setRangeLoading(true);
+    try {
+      // 通过后端接口获取范围内所有章节 ID
+      const res = await chapterApi.getIdsByRange(projectId, { start, end });
+      if (res.data && res.data.length > 0) {
+        setSelectedIds(res.data);
+        message.success(`已选中第 ${start} ~ ${end} 章，共 ${res.data.length} 个章节`);
+      } else {
+        setSelectedIds([]);
+        message.warning(`第 ${start} ~ ${end} 章中没有章节`);
+      }
+      // 清空列表并跳转到 L 位置
+      lazyList.reset();
+      await lazyList.jumpToIndex(start);
+    } catch {
+      message.error('获取范围章节失败');
+    } finally {
+      setRangeLoading(false);
+    }
+  }, [rangeStart, rangeEnd, lazyList, projectId]);
 
   const statusColor: Record<string, string> = {
     pending: 'default',
@@ -279,7 +348,7 @@ export default function BatchTTSModal({ open, onClose, projectId, chapters, onCo
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
           <Text strong style={{ color: '#cdd6f4' }}>选择章节</Text>
           <Space size={8}>
-            <a onClick={handleSelectAll} style={{ fontSize: 12 }}>全选</a>
+            <a onClick={handleSelectAll} style={{ fontSize: 12 }}>选中可见的</a>
             <a onClick={handleDeselectAll} style={{ fontSize: 12 }}>取消全选</a>
           </Space>
         </div>
@@ -289,7 +358,7 @@ export default function BatchTTSModal({ open, onClose, projectId, chapters, onCo
           <InputNumber
             size="small"
             min={1}
-            max={sortedChapters.length}
+            max={lazyList.total || 1}
             value={rangeStart}
             onChange={(v) => setRangeStart(v ?? 1)}
             style={{ width: 80 }}
@@ -299,43 +368,57 @@ export default function BatchTTSModal({ open, onClose, projectId, chapters, onCo
           <InputNumber
             size="small"
             min={1}
-            max={sortedChapters.length}
+            max={lazyList.total || 1}
             value={rangeEnd}
-            onChange={(v) => setRangeEnd(v ?? sortedChapters.length)}
+            onChange={(v) => setRangeEnd(v ?? lazyList.total)}
             style={{ width: 80 }}
             disabled={running}
           />
           <Text style={{ color: '#a6adc8', fontSize: 12, whiteSpace: 'nowrap' }}>章</Text>
           <button
             onClick={handleSelectRange}
-            disabled={running}
+            disabled={running || rangeLoading}
             style={{
               padding: '2px 12px',
-              background: '#6366f1',
+              background: rangeLoading ? '#45475a' : '#6366f1',
               border: 'none',
               borderRadius: 4,
               color: '#fff',
-              cursor: running ? 'not-allowed' : 'pointer',
+              cursor: (running || rangeLoading) ? 'not-allowed' : 'pointer',
               fontSize: 12,
               whiteSpace: 'nowrap',
             }}
           >
-            应用范围
+            {rangeLoading ? '加载中...' : '应用范围'}
           </button>
-          <Text style={{ color: '#585b70', fontSize: 11 }}>共 {sortedChapters.length} 章，已选 {selectedIds.length} 章</Text>
+          <Text style={{ color: '#585b70', fontSize: 11 }}>共 {lazyList.total} 章，已选 {selectedIds.length} 章</Text>
         </div>
-        <div style={{ maxHeight: 180, overflowY: 'auto', background: '#181825', borderRadius: 8, padding: 12, border: '1px solid #313244' }}>
-          <Checkbox.Group
-            value={selectedIds}
-            onChange={(vals) => setSelectedIds(vals as number[])}
-            style={{ display: 'flex', flexDirection: 'column', gap: 6 }}
-          >
-            {sortedChapters.map((ch, idx) => {
-              const cs = chapterStatuses.find((s) => s.id === ch.id);
+        <div
+          ref={lazyList.listRef as React.RefObject<HTMLDivElement>}
+          onScroll={lazyList.handleScroll}
+          style={{ maxHeight: 180, overflowY: 'auto', background: '#181825', borderRadius: 8, padding: 12, border: '1px solid #313244' }}
+        >
+          {lazyList.hasLess && !lazyList.loading && (
+            <div style={{ textAlign: 'center', padding: 4, color: '#585b70', fontSize: 11 }}>↑ 向上滚动加载更多</div>
+          )}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {lazyList.chapters.map((ch, idx) => {
+              const globalIndex = lazyList.offsetStart + idx + 1;
+              const cs = chapterStatuses.get(ch.id);
               return (
-                <div key={ch.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <Checkbox value={ch.id} disabled={running}>
-                    <span style={{ color: '#585b70', fontSize: 11, marginRight: 4 }}>#{idx + 1}</span>
+                <div key={ch.id} data-chapter-item style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Checkbox
+                    checked={selectedIds.includes(ch.id)}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setSelectedIds(prev => [...prev, ch.id]);
+                      } else {
+                        setSelectedIds(prev => prev.filter(id => id !== ch.id));
+                      }
+                    }}
+                    disabled={running}
+                  >
+                    <span style={{ color: '#585b70', fontSize: 11, marginRight: 4 }}>#{globalIndex}</span>
                     <span style={{ color: '#cdd6f4' }}>{ch.title}</span>
                   </Checkbox>
                   <Space size={4}>
@@ -349,7 +432,16 @@ export default function BatchTTSModal({ open, onClose, projectId, chapters, onCo
                 </div>
               );
             })}
-          </Checkbox.Group>
+          </div>
+          {lazyList.loading && (
+            <div style={{ textAlign: 'center', padding: 8, color: '#585b70', fontSize: 11 }}>加载中...</div>
+          )}
+          {!lazyList.loading && lazyList.chapters.length === 0 && (
+            <div style={{ textAlign: 'center', padding: 12, color: '#585b70' }}>暂无章节</div>
+          )}
+          {!lazyList.loading && !lazyList.hasMore && lazyList.chapters.length > 0 && (
+            <div style={{ textAlign: 'center', padding: 4, color: '#585b70', fontSize: 11 }}>已加载全部</div>
+          )}
         </div>
       </div>
 
