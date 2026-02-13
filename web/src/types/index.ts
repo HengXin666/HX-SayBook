@@ -75,6 +75,7 @@ export interface Role {
   project_id: number;
   name: string;
   default_voice_id: number | null;
+  description: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -166,6 +167,7 @@ export interface WSEvent {
 export interface BatchLLMRequest {
   project_id: number;
   chapter_ids: number[];
+  concurrency?: number;
 }
 
 /** 批量TTS请求 */

@@ -55,6 +55,7 @@ class RolePO(Base):
     project_id = Column(Integer, nullable=False)
     name = Column(String(100), nullable=False)
     default_voice_id = Column(Integer, ForeignKey("voices.id"), nullable=True)
+    description = Column(Text, nullable=True)
     created_at = Column(
         DateTime, default=lambda: datetime.now(timezone.utc), nullable=False
     )

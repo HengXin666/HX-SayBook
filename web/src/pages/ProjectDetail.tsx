@@ -1557,14 +1557,14 @@ export default function ProjectDetail() {
                 <Card
                   size="small"
                   hoverable
-                  style={{ cursor: 'pointer' }}
+                  style={{ cursor: 'pointer', overflow: 'hidden' }}
                   onClick={() => voiceModalRole && handleBindVoice(voiceModalRole, v.id)}
                 >
                   <div style={{ marginBottom: 8 }}>
-                    <Text strong>{v.name}</Text>
-                    <div style={{ marginTop: 4 }}>
+                    <Text strong style={{ wordBreak: 'break-all' }}>{v.name}</Text>
+                    <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                       {v.description?.split(',').map((tag, i) => (
-                        <Tag key={i} style={{ marginBottom: 4 }}>{tag.trim()}</Tag>
+                        <Tag key={i} style={{ marginBottom: 0, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis' }}>{tag.trim()}</Tag>
                       ))}
                       {!v.description && <Text type="secondary" style={{ fontSize: 12 }}>无标签</Text>}
                     </div>

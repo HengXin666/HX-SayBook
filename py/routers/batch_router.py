@@ -57,6 +57,7 @@ class BatchLLMRequest(BaseModel):
 
     project_id: int
     chapter_ids: List[int]  # 支持选择章节范围
+    concurrency: int = 1  # 并发数，默认1，范围1~10
 
 
 class BatchTTSRequest(BaseModel):
@@ -112,297 +113,415 @@ def _get_services(db: Session):
 
 
 # ============================================================
-# 批量 LLM 解析
+# 批量 LLM 任务管理（支持并发 + 取消）
 # ============================================================
+
+# 存储运行中的批量LLM任务: project_id -> {"cancel_event": asyncio.Event, "task": asyncio.Task}
+_batch_llm_tasks: dict = {}
 
 
 @router.post(
     "/llm-parse",
     response_model=Res,
     summary="批量LLM解析章节",
-    description="选择章节范围，批量进行LLM台词拆分，通过WebSocket推送日志和进度",
+    description="选择章节范围，批量进行LLM台词拆分，支持并发和取消，通过WebSocket推送日志和进度",
 )
 async def batch_llm_parse(req: BatchLLMRequest):
     """批量解析多个章节，通过 WS 推送实时进度"""
-    task = asyncio.create_task(_do_batch_llm(req.project_id, req.chapter_ids))
+    # 如果该项目已有运行中的任务，拒绝重复启动
+    if req.project_id in _batch_llm_tasks:
+        return Res(code=400, message="该项目已有批量LLM任务在运行中，请先取消后再重试")
+
+    concurrency = max(1, min(10, req.concurrency))  # 限制并发范围 1~10
+    cancel_event = asyncio.Event()
+    task = asyncio.create_task(
+        _do_batch_llm(req.project_id, req.chapter_ids, concurrency, cancel_event)
+    )
+    _batch_llm_tasks[req.project_id] = {"cancel_event": cancel_event, "task": task}
+
+    # 任务结束后自动清理
+    def _cleanup(fut):
+        _batch_llm_tasks.pop(req.project_id, None)
+
+    task.add_done_callback(_cleanup)
+
     return Res(
         code=200,
         message="批量LLM解析任务已启动",
-        data={"chapter_count": len(req.chapter_ids)},
+        data={"chapter_count": len(req.chapter_ids), "concurrency": concurrency},
     )
 
 
-async def _do_batch_llm(project_id: int, chapter_ids: List[int]):
-    """后台执行批量LLM解析"""
-    total = len(chapter_ids)
+@router.post(
+    "/llm-cancel",
+    response_model=Res,
+    summary="取消批量LLM解析",
+    description="取消正在运行的批量LLM解析任务",
+)
+async def batch_llm_cancel(project_id: int):
+    """取消正在运行的批量LLM任务"""
+    task_info = _batch_llm_tasks.get(project_id)
+    if not task_info:
+        return Res(code=404, message="没有正在运行的批量LLM任务")
 
-    for idx, chapter_id in enumerate(chapter_ids):
-        db = SessionLocal()
-        try:
-            services = _get_services(db)
-            chapter_svc = services["chapter"]
-            line_svc = services["line"]
-            role_svc = services["role"]
-            emotion_svc = services["emotion"]
-            strength_svc = services["strength"]
-            prompt_svc = services["prompt"]
-            project_svc = services["project"]
+    task_info["cancel_event"].set()
+    logger.info(f"批量LLM任务取消信号已发送: project_id={project_id}")
+    return Res(code=200, message="取消信号已发送，任务将在当前章节处理完成后停止")
 
-            progress = round((idx / total) * 100)
 
+async def _process_single_chapter(
+    project_id: int,
+    chapter_id: int,
+    idx: int,
+    total: int,
+    cancel_event: asyncio.Event,
+    done_counter: dict,
+):
+    """处理单个章节的LLM解析（供并发调度使用）"""
+    # 检查是否已取消
+    if cancel_event.is_set():
+        await manager.broadcast(
+            {
+                "event": "batch_llm_progress",
+                "project_id": project_id,
+                "chapter_id": chapter_id,
+                "current": done_counter["done"],
+                "total": total,
+                "progress": round((done_counter["done"] / total) * 100),
+                "status": "cancelled",
+                "log": f"⏹️ 章节 {chapter_id} 已取消",
+            }
+        )
+        return
+
+    db = SessionLocal()
+    try:
+        services = _get_services(db)
+        chapter_svc = services["chapter"]
+        line_svc = services["line"]
+        role_svc = services["role"]
+        emotion_svc = services["emotion"]
+        strength_svc = services["strength"]
+        prompt_svc = services["prompt"]
+        project_svc = services["project"]
+
+        progress = round((done_counter["done"] / total) * 100)
+
+        await manager.broadcast(
+            {
+                "event": "batch_llm_progress",
+                "project_id": project_id,
+                "chapter_id": chapter_id,
+                "current": done_counter["done"] + 1,
+                "total": total,
+                "progress": progress,
+                "status": "processing",
+                "log": f"📖 开始解析章节 {chapter_id} ({done_counter['done'] + 1}/{total})",
+            }
+        )
+
+        chapter = chapter_svc.get_chapter(chapter_id)
+        if not chapter or not chapter.text_content:
+            done_counter["done"] += 1
             await manager.broadcast(
                 {
                     "event": "batch_llm_progress",
                     "project_id": project_id,
                     "chapter_id": chapter_id,
-                    "current": idx + 1,
+                    "current": done_counter["done"],
                     "total": total,
-                    "progress": progress,
-                    "status": "processing",
-                    "log": f"📖 开始解析章节 {chapter_id} ({idx + 1}/{total})",
+                    "progress": round((done_counter["done"] / total) * 100),
+                    "status": "skipped",
+                    "log": f"⚠️ 章节 {chapter_id} 内容为空，已跳过",
+                }
+            )
+            return
+
+        # 拆分文本
+        try:
+            contents = chapter_svc.split_text(chapter_id, 1500)
+            await manager.broadcast(
+                {
+                    "event": "batch_llm_log",
+                    "project_id": project_id,
+                    "chapter_id": chapter_id,
+                    "log": f"📝 章节文本划分为 {len(contents)} 段",
+                }
+            )
+        except Exception as e:
+            done_counter["done"] += 1
+            await manager.broadcast(
+                {
+                    "event": "batch_llm_progress",
+                    "project_id": project_id,
+                    "chapter_id": chapter_id,
+                    "current": done_counter["done"],
+                    "total": total,
+                    "progress": round((done_counter["done"] / total) * 100),
+                    "status": "error",
+                    "log": f"❌ 章节拆分失败: {e}",
+                }
+            )
+            return
+
+        # 获取角色、情绪、强度
+        roles = role_svc.get_all_roles(project_id)
+        roles_set = set(role.name for role in roles)
+        emotions = emotion_svc.get_all_emotions()
+        strengths = strength_svc.get_all_strengths()
+        emotion_names = [e.name for e in emotions]
+        strength_names = [s.name for s in strengths]
+        emotions_dict = {e.name: e.id for e in emotions}
+        strengths_dict = {s.name: s.id for s in strengths}
+
+        project = project_svc.get_project(project_id)
+        is_precise_fill = project.is_precise_fill
+
+        if not all(
+            [project.tts_provider_id, project.llm_provider_id, project.llm_model]
+        ):
+            done_counter["done"] += 1
+            await manager.broadcast(
+                {
+                    "event": "batch_llm_progress",
+                    "project_id": project_id,
+                    "chapter_id": chapter_id,
+                    "current": done_counter["done"],
+                    "total": total,
+                    "progress": round((done_counter["done"] / total) * 100),
+                    "status": "error",
+                    "log": "❌ 项目缺少 TTS/LLM/Model 配置",
+                }
+            )
+            return
+
+        prompt = prompt_svc.get_prompt(project.prompt_id) if project.prompt_id else None
+        if not prompt:
+            done_counter["done"] += 1
+            await manager.broadcast(
+                {
+                    "event": "batch_llm_progress",
+                    "project_id": project_id,
+                    "chapter_id": chapter_id,
+                    "current": done_counter["done"],
+                    "total": total,
+                    "progress": round((done_counter["done"] / total) * 100),
+                    "status": "error",
+                    "log": "❌ 提示词不存在",
+                }
+            )
+            return
+
+        # 逐段解析
+        all_line_data = []
+        parse_success = True
+        for seg_idx, content in enumerate(contents):
+            # 每段解析前检查取消信号
+            if cancel_event.is_set():
+                done_counter["done"] += 1
+                await manager.broadcast(
+                    {
+                        "event": "batch_llm_progress",
+                        "project_id": project_id,
+                        "chapter_id": chapter_id,
+                        "current": done_counter["done"],
+                        "total": total,
+                        "progress": round((done_counter["done"] / total) * 100),
+                        "status": "cancelled",
+                        "log": f"⏹️ 章节 {chapter_id} 解析被取消",
+                    }
+                )
+                return
+
+            await manager.broadcast(
+                {
+                    "event": "batch_llm_log",
+                    "project_id": project_id,
+                    "chapter_id": chapter_id,
+                    "log": f"🔄 解析第 {seg_idx + 1}/{len(contents)} 段...",
                 }
             )
 
-            chapter = chapter_svc.get_chapter(chapter_id)
-            if not chapter or not chapter.text_content:
-                await manager.broadcast(
-                    {
-                        "event": "batch_llm_progress",
-                        "project_id": project_id,
-                        "chapter_id": chapter_id,
-                        "current": idx + 1,
-                        "total": total,
-                        "progress": progress,
-                        "status": "skipped",
-                        "log": f"⚠️ 章节 {chapter_id} 内容为空，已跳过",
-                    }
-                )
-                continue
-
-            # 拆分文本
             try:
-                contents = chapter_svc.split_text(chapter_id, 1500)
-                await manager.broadcast(
-                    {
-                        "event": "batch_llm_log",
-                        "project_id": project_id,
-                        "chapter_id": chapter_id,
-                        "log": f"📝 章节文本划分为 {len(contents)} 段",
-                    }
-                )
-            except Exception as e:
-                await manager.broadcast(
-                    {
-                        "event": "batch_llm_progress",
-                        "project_id": project_id,
-                        "chapter_id": chapter_id,
-                        "current": idx + 1,
-                        "total": total,
-                        "progress": progress,
-                        "status": "error",
-                        "log": f"❌ 章节拆分失败: {e}",
-                    }
-                )
-                continue
-
-            # 获取角色、情绪、强度
-            roles = role_svc.get_all_roles(project_id)
-            roles_set = set(role.name for role in roles)
-            emotions = emotion_svc.get_all_emotions()
-            strengths = strength_svc.get_all_strengths()
-            emotion_names = [e.name for e in emotions]
-            strength_names = [s.name for s in strengths]
-            emotions_dict = {e.name: e.id for e in emotions}
-            strengths_dict = {s.name: s.id for s in strengths}
-
-            project = project_svc.get_project(project_id)
-            is_precise_fill = project.is_precise_fill
-
-            if not all(
-                [project.tts_provider_id, project.llm_provider_id, project.llm_model]
-            ):
-                await manager.broadcast(
-                    {
-                        "event": "batch_llm_progress",
-                        "project_id": project_id,
-                        "chapter_id": chapter_id,
-                        "current": idx + 1,
-                        "total": total,
-                        "progress": progress,
-                        "status": "error",
-                        "log": "❌ 项目缺少 TTS/LLM/Model 配置",
-                    }
-                )
-                continue
-
-            prompt = (
-                prompt_svc.get_prompt(project.prompt_id) if project.prompt_id else None
-            )
-            if not prompt:
-                await manager.broadcast(
-                    {
-                        "event": "batch_llm_progress",
-                        "project_id": project_id,
-                        "chapter_id": chapter_id,
-                        "current": idx + 1,
-                        "total": total,
-                        "progress": progress,
-                        "status": "error",
-                        "log": "❌ 提示词不存在",
-                    }
-                )
-                continue
-
-            # 逐段解析
-            all_line_data = []
-            parse_success = True
-            for seg_idx, content in enumerate(contents):
-                await manager.broadcast(
-                    {
-                        "event": "batch_llm_log",
-                        "project_id": project_id,
-                        "chapter_id": chapter_id,
-                        "log": f"🔄 解析第 {seg_idx + 1}/{len(contents)} 段...",
-                    }
+                result = chapter_svc.para_content(
+                    prompt.content,
+                    chapter_id,
+                    content,
+                    list(roles_set),
+                    emotion_names,
+                    strength_names,
+                    is_precise_fill,
                 )
 
-                try:
-                    result = chapter_svc.para_content(
-                        prompt.content,
-                        chapter_id,
-                        content,
-                        list(roles_set),
-                        emotion_names,
-                        strength_names,
-                        is_precise_fill,
-                    )
-
-                    if not result["success"]:
-                        await manager.broadcast(
-                            {
-                                "event": "batch_llm_log",
-                                "project_id": project_id,
-                                "chapter_id": chapter_id,
-                                "log": f"❌ 段 {seg_idx + 1} 解析失败: {result['message']}",
-                            }
-                        )
-                        parse_success = False
-                        break
-
-                    lines_data = result["data"]
-                    for ld in lines_data:
-                        roles_set.add(ld.role_name)
-                    all_line_data.extend(lines_data)
-
+                if not result["success"]:
                     await manager.broadcast(
                         {
                             "event": "batch_llm_log",
                             "project_id": project_id,
                             "chapter_id": chapter_id,
-                            "log": f"✅ 段 {seg_idx + 1} 解析完成，获得 {len(lines_data)} 条台词",
-                        }
-                    )
-
-                except Exception as e:
-                    logger.error(f"解析失败: {e}\n{traceback.format_exc()}")
-                    await manager.broadcast(
-                        {
-                            "event": "batch_llm_log",
-                            "project_id": project_id,
-                            "chapter_id": chapter_id,
-                            "log": f"❌ 段 {seg_idx + 1} 解析异常: {e}",
+                            "log": f"❌ 段 {seg_idx + 1} 解析失败: {result['message']}",
                         }
                     )
                     parse_success = False
                     break
 
-            if parse_success and all_line_data:
-                # 写入数据库
-                try:
-                    audio_path = os.path.join(
-                        project.project_root_path,
-                        str(project_id),
-                        str(chapter_id),
-                        "audio",
-                    )
-                    os.makedirs(audio_path, exist_ok=True)
-                    line_svc.update_init_lines(
-                        all_line_data,
-                        project_id,
-                        chapter_id,
-                        emotions_dict,
-                        strengths_dict,
-                        audio_path,
-                    )
+                lines_data = result["data"]
+                for ld in lines_data:
+                    roles_set.add(ld.role_name)
+                all_line_data.extend(lines_data)
 
-                    await manager.broadcast(
-                        {
-                            "event": "batch_llm_progress",
-                            "project_id": project_id,
-                            "chapter_id": chapter_id,
-                            "current": idx + 1,
-                            "total": total,
-                            "progress": round(((idx + 1) / total) * 100),
-                            "status": "done",
-                            "log": f"✅ 章节 {chapter_id} 解析完成，共 {len(all_line_data)} 条台词",
-                        }
-                    )
-                except Exception as e:
-                    await manager.broadcast(
-                        {
-                            "event": "batch_llm_progress",
-                            "project_id": project_id,
-                            "chapter_id": chapter_id,
-                            "current": idx + 1,
-                            "total": total,
-                            "progress": progress,
-                            "status": "error",
-                            "log": f"❌ 写入数据库失败: {e}",
-                        }
-                    )
-            else:
+                await manager.broadcast(
+                    {
+                        "event": "batch_llm_log",
+                        "project_id": project_id,
+                        "chapter_id": chapter_id,
+                        "log": f"✅ 段 {seg_idx + 1} 解析完成，获得 {len(lines_data)} 条台词",
+                    }
+                )
+
+            except Exception as e:
+                logger.error(f"解析失败: {e}\n{traceback.format_exc()}")
+                await manager.broadcast(
+                    {
+                        "event": "batch_llm_log",
+                        "project_id": project_id,
+                        "chapter_id": chapter_id,
+                        "log": f"❌ 段 {seg_idx + 1} 解析异常: {e}",
+                    }
+                )
+                parse_success = False
+                break
+
+        if parse_success and all_line_data:
+            # 写入数据库
+            try:
+                audio_path = os.path.join(
+                    project.project_root_path,
+                    str(project_id),
+                    str(chapter_id),
+                    "audio",
+                )
+                os.makedirs(audio_path, exist_ok=True)
+                line_svc.update_init_lines(
+                    all_line_data,
+                    project_id,
+                    chapter_id,
+                    emotions_dict,
+                    strengths_dict,
+                    audio_path,
+                )
+
+                done_counter["done"] += 1
                 await manager.broadcast(
                     {
                         "event": "batch_llm_progress",
                         "project_id": project_id,
                         "chapter_id": chapter_id,
-                        "current": idx + 1,
+                        "current": done_counter["done"],
                         "total": total,
-                        "progress": progress,
-                        "status": "error",
-                        "log": f"❌ 章节 {chapter_id} 解析失败",
+                        "progress": round((done_counter["done"] / total) * 100),
+                        "status": "done",
+                        "log": f"✅ 章节 {chapter_id} 解析完成，共 {len(all_line_data)} 条台词",
                     }
                 )
-
-        except Exception as e:
-            logger.error(f"批量LLM处理异常: {e}\n{traceback.format_exc()}")
+            except Exception as e:
+                done_counter["done"] += 1
+                await manager.broadcast(
+                    {
+                        "event": "batch_llm_progress",
+                        "project_id": project_id,
+                        "chapter_id": chapter_id,
+                        "current": done_counter["done"],
+                        "total": total,
+                        "progress": round((done_counter["done"] / total) * 100),
+                        "status": "error",
+                        "log": f"❌ 写入数据库失败: {e}",
+                    }
+                )
+        else:
+            done_counter["done"] += 1
             await manager.broadcast(
                 {
                     "event": "batch_llm_progress",
                     "project_id": project_id,
                     "chapter_id": chapter_id,
-                    "current": idx + 1,
+                    "current": done_counter["done"],
                     "total": total,
-                    "progress": 0,
+                    "progress": round((done_counter["done"] / total) * 100),
                     "status": "error",
-                    "log": f"❌ 未知错误: {e}",
+                    "log": f"❌ 章节 {chapter_id} 解析失败",
                 }
             )
-        finally:
-            db.close()
 
-        # 避免过快请求LLM
-        await asyncio.sleep(0.5)
+    except Exception as e:
+        logger.error(f"批量LLM处理异常: {e}\n{traceback.format_exc()}")
+        done_counter["done"] += 1
+        await manager.broadcast(
+            {
+                "event": "batch_llm_progress",
+                "project_id": project_id,
+                "chapter_id": chapter_id,
+                "current": done_counter["done"],
+                "total": total,
+                "progress": 0,
+                "status": "error",
+                "log": f"❌ 未知错误: {e}",
+            }
+        )
+    finally:
+        db.close()
 
-    # 全部完成
-    await manager.broadcast(
-        {
-            "event": "batch_llm_complete",
-            "project_id": project_id,
-            "total": total,
-            "log": f"🎉 批量LLM解析全部完成！共处理 {total} 个章节",
-        }
-    )
+
+async def _do_batch_llm(
+    project_id: int,
+    chapter_ids: List[int],
+    concurrency: int,
+    cancel_event: asyncio.Event,
+):
+    """后台执行批量LLM解析（支持并发 + 取消）"""
+    total = len(chapter_ids)
+    semaphore = asyncio.Semaphore(concurrency)
+    # 使用 dict 做计数器以便在协程间共享
+    done_counter = {"done": 0}
+
+    async def _sem_wrapper(chapter_id: int, idx: int):
+        async with semaphore:
+            await _process_single_chapter(
+                project_id, chapter_id, idx, total, cancel_event, done_counter
+            )
+            # 避免过快请求LLM
+            await asyncio.sleep(0.3)
+
+    # 创建所有任务
+    tasks = [
+        asyncio.create_task(_sem_wrapper(cid, idx))
+        for idx, cid in enumerate(chapter_ids)
+    ]
+
+    # 等待所有任务完成
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+    # 发送完成/取消事件
+    if cancel_event.is_set():
+        await manager.broadcast(
+            {
+                "event": "batch_llm_complete",
+                "project_id": project_id,
+                "total": total,
+                "cancelled": True,
+                "log": f"⏹️ 批量LLM解析已取消！已完成 {done_counter['done']}/{total} 个章节",
+            }
+        )
+    else:
+        await manager.broadcast(
+            {
+                "event": "batch_llm_complete",
+                "project_id": project_id,
+                "total": total,
+                "cancelled": False,
+                "log": f"🎉 批量LLM解析全部完成！共处理 {total} 个章节",
+            }
+        )
 
 
 # ============================================================
