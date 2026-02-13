@@ -133,6 +133,7 @@ export const promptApi = {
 export const batchApi = {
   llmParse: (data: BatchLLMRequest) => api.post<unknown, Res>('/batch/llm-parse', data),
   llmCancel: (projectId: number) => api.post<unknown, Res>('/batch/llm-cancel', null, { params: { project_id: projectId } }),
+  llmStatus: (projectId: number) => api.get<unknown, Res<{ running: boolean; cancelled: boolean }>>('/batch/llm-status', { params: { project_id: projectId } }),
   ttsGenerate: (data: BatchTTSRequest) => api.post<unknown, Res>('/batch/tts-generate', data),
   voicePreview: (data: VoiceDebugRequest) => api.post<unknown, Res<{ audio_url: string }>>('/batch/voice-preview', data),
   voiceDebug: (data: VoiceDebugRequest) => api.post<unknown, Res<{ audio_url: string; voice_name: string; emotion: string; strength: string; speed: number }>>('/batch/voice-debug', data),

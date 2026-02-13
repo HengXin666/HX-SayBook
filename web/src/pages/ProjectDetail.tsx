@@ -104,6 +104,10 @@ export default function ProjectDetail() {
   const [emotions, setEmotions] = useState<Emotion[]>([]);
   const [strengths, setStrengths] = useState<Strength[]>([]);
 
+  // 情绪/强度 id->name 映射表，用于在 options 未加载时也能显示中文名
+  const emotionMap = useMemo(() => new Map(emotions.map(e => [e.id, e.name])), [emotions]);
+  const strengthMap = useMemo(() => new Map(strengths.map(s => [s.id, s.name])), [strengths]);
+
   // ==================== 配置数据 ====================
   const [llmProviders, setLlmProviders] = useState<LLMProvider[]>([]);
   const [ttsProviders, setTtsProviders] = useState<TTSProvider[]>([]);
@@ -136,6 +140,11 @@ export default function ProjectDetail() {
   // ==================== 批量操作弹窗 ====================
   const [batchLLMModalOpen, setBatchLLMModalOpen] = useState(false);
   const [batchTTSModalOpen, setBatchTTSModalOpen] = useState(false);
+  // 批量LLM后台运行状态（弹窗关闭时也能显示进度）
+  const [batchLLMRunning, setBatchLLMRunning] = useState(false);
+  const [batchLLMProgress, setBatchLLMProgress] = useState(0);
+  const [batchLLMCurrent, setBatchLLMCurrent] = useState(0);
+  const [batchLLMTotal, setBatchLLMTotal] = useState(0);
 
   // ==================== 合并导出弹窗 ====================
   const [mergeModalOpen, setMergeModalOpen] = useState(false);
@@ -323,9 +332,16 @@ export default function ProjectDetail() {
   }, [project?.tts_provider_id]);
 
   const loadEnums = useCallback(async () => {
-    const [emoRes, strRes] = await Promise.all([emotionApi.getAll(), strengthApi.getAll()]);
-    if (emoRes.data) setEmotions(emoRes.data);
-    if (strRes.data) setStrengths(strRes.data);
+    try {
+      const [emoRes, strRes] = await Promise.all([emotionApi.getAll(), strengthApi.getAll()]);
+      // 后端在无数据时返回 code=404 + data=[]，仍需设置
+      if (Array.isArray(emoRes.data)) setEmotions(emoRes.data);
+      else if (emoRes.code === 200 && emoRes.data) setEmotions(emoRes.data);
+      if (Array.isArray(strRes.data)) setStrengths(strRes.data);
+      else if (strRes.code === 200 && strRes.data) setStrengths(strRes.data);
+    } catch (e) {
+      console.error('加载情绪/强度枚举失败', e);
+    }
   }, []);
 
   // ==================== 初始化 ====================
@@ -941,74 +957,132 @@ export default function ProjectDetail() {
       dataIndex: 'emotion_id',
       key: 'emotion_id',
       width: 110,
-      render: (emotionId: number, record: Line) => (
-        <Select
-          size="small"
-          value={emotionId || undefined}
-          style={{ width: '100%' }}
-          placeholder="情绪"
-          allowClear
-          options={emotions.map((e) => ({ value: e.id, label: e.name }))}
-          onChange={(val) => handleUpdateLineField(record.id, 'emotion_id', val || null)}
-        />
-      ),
+      render: (emotionId: number | null, record: Line) => {
+        // 构建 options：确保当前已选值始终存在于列表中（即使 emotions 尚未加载）
+        const emotionOptions = emotions.length > 0
+          ? emotions.map((e) => ({ value: e.id, label: e.name }))
+          : emotionId
+            ? [{ value: emotionId, label: emotionMap.get(emotionId) || `情绪#${emotionId}` }]
+            : [];
+        return (
+          <Select
+            size="small"
+            value={emotionId ?? undefined}
+            style={{ width: '100%' }}
+            placeholder="选择情绪"
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            options={emotionOptions}
+            onChange={(val) => handleUpdateLineField(record.id, 'emotion_id', val ?? null)}
+            notFoundContent="暂无情绪选项"
+          />
+        );
+      },
     },
     {
       title: '强度',
       dataIndex: 'strength_id',
       key: 'strength_id',
       width: 110,
-      render: (strengthId: number, record: Line) => (
-        <Select
-          size="small"
-          value={strengthId || undefined}
-          style={{ width: '100%' }}
-          placeholder="强度"
-          allowClear
-          options={strengths.map((s) => ({ value: s.id, label: s.name }))}
-          onChange={(val) => handleUpdateLineField(record.id, 'strength_id', val || null)}
-        />
-      ),
-    },
-    {
-      title: '试听',
-      key: 'audio',
-      width: 60,
-      render: (_: unknown, record: Line) =>
-        record.audio_path && record.status === 'done' ? (
-          <Button
-            type="text"
-            icon={playingLineId === record.id ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
-            onClick={() => handlePlayLine(record)}
-            style={{ color: playingLineId === record.id ? '#f5222d' : '#52c41a' }}
+      render: (strengthId: number | null, record: Line) => {
+        const strengthOptions = strengths.length > 0
+          ? strengths.map((s) => ({ value: s.id, label: s.name }))
+          : strengthId
+            ? [{ value: strengthId, label: strengthMap.get(strengthId) || `强度#${strengthId}` }]
+            : [];
+        return (
+          <Select
+            size="small"
+            value={strengthId ?? undefined}
+            style={{ width: '100%' }}
+            placeholder="选择强度"
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            options={strengthOptions}
+            onChange={(val) => handleUpdateLineField(record.id, 'strength_id', val ?? null)}
+            notFoundContent="暂无强度选项"
           />
-        ) : null,
+        );
+      },
     },
     {
       title: '状态',
       dataIndex: 'status',
       key: 'status',
-      width: 80,
-      render: (status: string) => <Tag color={statusType(status)}>{statusText(status)}</Tag>,
+      width: 70,
+      render: (status: string) => (
+        <Tag color={statusType(status)} style={{ margin: 0, fontSize: 11 }}>
+          {statusText(status)}
+        </Tag>
+      ),
+    },
+    {
+      title: '试听',
+      key: 'play',
+      width: 90,
+      render: (_: unknown, record: Line) => {
+        const isDone = record.audio_path && record.status === 'done';
+        if (!isDone) return <Text type="secondary" style={{ fontSize: 11 }}>—</Text>;
+        return (
+          <Space size={2}>
+            <Tooltip title={playingLineId === record.id ? '暂停' : '播放'}>
+              <Button
+                type="text"
+                size="small"
+                icon={playingLineId === record.id ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
+                onClick={() => handlePlayLine(record)}
+                style={{ color: playingLineId === record.id ? '#f5222d' : '#52c41a' }}
+              />
+            </Tooltip>
+            <SpeedControl lineId={record.id} type="line" size="small" onComplete={loadLines} />
+          </Space>
+        );
+      },
     },
     {
       title: '操作',
       key: 'actions',
-      width: 200,
-      render: (_: unknown, record: Line) => (
-        <Space size={4} wrap>
-          <Button size="small" type="primary" disabled={!canGenerate(record)} onClick={() => handleGenerateOne(record)}>
-            生成
-          </Button>
-          {record.audio_path && record.status === 'done' && (
-            <SpeedControl lineId={record.id} type="line" size="small" onComplete={loadLines} />
-          )}
-          <Button size="small" onClick={() => handleInsertBelow(record)}>插入</Button>
-          <Popconfirm title="确认删除？" onConfirm={() => handleDeleteLine(record)}>
-            <Button size="small" danger>删除</Button>
-          </Popconfirm>
-        </Space>
-      ),
+      width: 140,
+      render: (_: unknown, record: Line) => {
+        const isProcessing = record.status === 'processing';
+        return (
+          <Space size={4}>
+            <Tooltip title={isProcessing ? '生成中...' : !canGenerate(record) ? '请先绑定音色' : '生成语音'}>
+              <Button
+                size="small"
+                type="link"
+                icon={<SoundOutlined />}
+                disabled={!canGenerate(record) || isProcessing}
+                loading={isProcessing}
+                onClick={() => handleGenerateOne(record)}
+                style={{ fontSize: 12, padding: '0 4px' }}
+              />
+            </Tooltip>
+            <Tooltip title="在下方插入">
+              <Button
+                size="small"
+                type="link"
+                icon={<PlusOutlined />}
+                onClick={() => handleInsertBelow(record)}
+                style={{ fontSize: 12, padding: '0 4px' }}
+              />
+            </Tooltip>
+            <Popconfirm title="确认删除？" onConfirm={() => handleDeleteLine(record)} okText="删除" cancelText="取消">
+              <Tooltip title="删除">
+                <Button
+                  size="small"
+                  type="link"
+                  danger
+                  icon={<DeleteOutlined />}
+                  style={{ fontSize: 12, padding: '0 4px' }}
+                />
+              </Tooltip>
+            </Popconfirm>
+          </Space>
+        );
+      },
     },
   ];
 
@@ -1175,6 +1249,39 @@ export default function ProjectDetail() {
 
       {/* ==================== 右侧内容区 ==================== */}
       <Content style={{ display: 'flex', flexDirection: 'column', gap: 12, overflow: 'hidden' }}>
+        {/* 批量LLM后台运行提示条 */}
+        {batchLLMRunning && !batchLLMModalOpen && (
+          <div
+            style={{
+              background: 'linear-gradient(90deg, #1e1b4b, #312e81)',
+              borderRadius: 8,
+              padding: '8px 16px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              border: '1px solid #4f46e5',
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}
+            onClick={() => { loadAllChapters(); setBatchLLMModalOpen(true); }}
+          >
+            <Space>
+              <RobotOutlined style={{ color: '#818cf8', fontSize: 16 }} spin />
+              <Text style={{ color: '#c7d2fe', fontSize: 13 }}>
+                批量LLM解析进行中 ({batchLLMCurrent}/{batchLLMTotal})
+              </Text>
+              <Progress
+                percent={batchLLMProgress}
+                size="small"
+                style={{ width: 120, margin: 0 }}
+                strokeColor="#6366f1"
+                trailColor="#1e1b4b"
+                format={() => `${batchLLMProgress}%`}
+              />
+            </Space>
+            <Text style={{ color: '#818cf8', fontSize: 12 }}>点击查看详情 →</Text>
+          </div>
+        )}
         {!activeChapterId ? (
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <Empty description="请从左侧选择一个章节" />
@@ -1600,6 +1707,12 @@ export default function ProjectDetail() {
           loadLines();
           loadRoles();
         }}
+        onRunningChange={useCallback((running: boolean, progress: number, current: number, total: number) => {
+          setBatchLLMRunning(running);
+          setBatchLLMProgress(progress);
+          setBatchLLMCurrent(current);
+          setBatchLLMTotal(total);
+        }, [])}
       />
 
       {/* 批量 TTS 配音弹窗 */}
