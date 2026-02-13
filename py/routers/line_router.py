@@ -78,6 +78,78 @@ def get_audio_file(path: str):
     return FileResponse(path, media_type="audio/wav")
 
 
+# 合并多章节音频为 MP3 导出（注意：此路由必须在 /{project_id} 之前定义，否则会被路径参数拦截）
+from pydantic import BaseModel
+
+
+class MergeExportRequest(BaseModel):
+    """合并导出请求"""
+
+    project_id: int
+    chapter_ids: List[int]  # 要合并的章节ID列表
+    group_size: int = 0  # 每组章节数，0表示全部合并为一个文件
+    max_duration_minutes: float = 0  # 每段最大时长（分钟），0表示不限制
+
+
+@router.post("/merge-export", response_model=Res)
+async def merge_export_audio(
+    req: MergeExportRequest,
+    line_service: LineService = Depends(get_line_service),
+    project_service: ProjectService = Depends(get_project_service),
+    chapter_service: ChapterService = Depends(get_chapter_service),
+):
+    """
+    合并多章节音频为 MP3 文件。
+    - group_size=0: 所有章节合并为一个MP3
+    - group_size=N: 每N个章节合并为一个MP3
+    - max_duration_minutes>0: 按时长分段，以章节为最小单位（不在章节中间截断）
+    """
+    project = project_service.get_project(req.project_id)
+    if not project:
+        return Res(data=None, code=400, message="项目不存在")
+
+    if not req.chapter_ids:
+        return Res(data=None, code=400, message="请选择要合并的章节")
+
+    # 获取章节标题映射
+    chapter_titles = {}
+    for cid in req.chapter_ids:
+        ch = chapter_service.get_chapter(cid)
+        if ch:
+            chapter_titles[cid] = ch.title
+
+    project_root_path = project.project_root_path or getConfigPath()
+
+    try:
+        result = line_service.merge_chapters_audio(
+            project_root_path=project_root_path,
+            project_id=req.project_id,
+            chapter_ids=req.chapter_ids,
+            chapter_titles=chapter_titles,
+            group_size=req.group_size,
+            max_duration_minutes=req.max_duration_minutes,
+        )
+
+        if not result["files"]:
+            return Res(
+                data=None,
+                code=400,
+                message=result.get("message", "没有找到可合并的音频文件"),
+            )
+
+        return Res(
+            data=result,
+            code=200,
+            message=f"合并完成，共生成 {len(result['files'])} 个文件",
+        )
+
+    except Exception as e:
+        import traceback
+
+        traceback.print_exc()
+        return Res(data=None, code=500, message=f"合并失败: {str(e)}")
+
+
 @router.post(
     "/{project_id}",
     response_model=Res[LineResponseDTO],
@@ -447,75 +519,3 @@ async def export_chapter_audio_with_subtitle(
         return Res(data=None, code=400, message=result["message"])
 
     return Res(data=result, code=200, message=result["message"])
-
-
-# 合并多章节音频为 MP3 导出
-from pydantic import BaseModel
-
-
-class MergeExportRequest(BaseModel):
-    """合并导出请求"""
-
-    project_id: int
-    chapter_ids: List[int]  # 要合并的章节ID列表
-    group_size: int = 0  # 每组章节数，0表示全部合并为一个文件
-    max_duration_minutes: float = 0  # 每段最大时长（分钟），0表示不限制
-
-
-@router.post("/merge-export", response_model=Res)
-async def merge_export_audio(
-    req: MergeExportRequest,
-    line_service: LineService = Depends(get_line_service),
-    project_service: ProjectService = Depends(get_project_service),
-    chapter_service: ChapterService = Depends(get_chapter_service),
-):
-    """
-    合并多章节音频为 MP3 文件。
-    - group_size=0: 所有章节合并为一个MP3
-    - group_size=N: 每N个章节合并为一个MP3
-    - max_duration_minutes>0: 按时长分段，以章节为最小单位（不在章节中间截断）
-    """
-    project = project_service.get_project(req.project_id)
-    if not project:
-        return Res(data=None, code=400, message="项目不存在")
-
-    if not req.chapter_ids:
-        return Res(data=None, code=400, message="请选择要合并的章节")
-
-    # 获取章节标题映射
-    chapter_titles = {}
-    for cid in req.chapter_ids:
-        ch = chapter_service.get_chapter(cid)
-        if ch:
-            chapter_titles[cid] = ch.title
-
-    project_root_path = project.project_root_path or getConfigPath()
-
-    try:
-        result = line_service.merge_chapters_audio(
-            project_root_path=project_root_path,
-            project_id=req.project_id,
-            chapter_ids=req.chapter_ids,
-            chapter_titles=chapter_titles,
-            group_size=req.group_size,
-            max_duration_minutes=req.max_duration_minutes,
-        )
-
-        if not result["files"]:
-            return Res(
-                data=None,
-                code=400,
-                message=result.get("message", "没有找到可合并的音频文件"),
-            )
-
-        return Res(
-            data=result,
-            code=200,
-            message=f"合并完成，共生成 {len(result['files'])} 个文件",
-        )
-
-    except Exception as e:
-        import traceback
-
-        traceback.print_exc()
-        return Res(data=None, code=500, message=f"合并失败: {str(e)}")

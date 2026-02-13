@@ -1,13 +1,13 @@
 import {
-    AudioOutlined,
-    BugOutlined,
-    FileTextOutlined,
-    GithubOutlined,
-    MenuFoldOutlined,
-    MenuUnfoldOutlined,
-    ProjectOutlined,
-    SettingOutlined,
-    SoundOutlined,
+  AudioOutlined,
+  BugOutlined,
+  FileTextOutlined,
+  GithubOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
+  ProjectOutlined,
+  SettingOutlined,
+  SoundOutlined,
 } from '@ant-design/icons';
 import { Layout, Menu, Tooltip } from 'antd';
 import { useState } from 'react';
@@ -29,7 +29,7 @@ const menuItems = [
   { key: '/voice-debug', icon: <BugOutlined />, label: '语音调试' },
 ];
 
-const APP_VERSION = 'v2.2.0';
+const APP_VERSION = 'v2.3.0';
 
 function App() {
   const navigate = useNavigate();
