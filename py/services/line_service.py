@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import hashlib
 
@@ -36,6 +37,7 @@ def _lock_key(path: str) -> str:
 
 
 _file_locks = defaultdict(threading.Lock)
+_async_file_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
 class LineService:
@@ -210,6 +212,31 @@ class LineService:
                 tts_engine.upload_audio(reference_path, reference_path)
             #     添加emo_text
             return tts_engine.synthesize(
+                content, reference_path, emo_text, emo_vector, save_path
+            )
+
+    async def generate_audio_async(
+        self,
+        reference_path: str,
+        tts_provider_id,
+        content,
+        emo_text: str,
+        emo_vector: list[float],
+        save_path=None,
+    ):
+        """
+        异步版生成音频 —— 用 asyncio.Lock + httpx 非阻塞 IO。
+        """
+        tts_provider = self.tts_provider_repository.get_by_id(tts_provider_id)
+        tts_engine = TTSEngine(tts_provider.api_base_url)
+        key = _lock_key(reference_path)
+        lock = _async_file_locks[key]
+
+        async with lock:
+            exists = await tts_engine.check_audio_exists_async(reference_path)
+            if not exists:
+                await tts_engine.upload_audio_async(reference_path, reference_path)
+            return await tts_engine.synthesize_async(
                 content, reference_path, emo_text, emo_vector, save_path
             )
 

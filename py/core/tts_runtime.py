@@ -38,7 +38,6 @@ def emotion_text_to_vector(emotion: str, intensity: str) -> list[float]:
 
 async def tts_worker(app: FastAPI):
     q = app.state.tts_queue
-    ex = app.state.tts_executor
     while True:
         project_id, dto = await q.get()
         db = SessionLocal()
@@ -84,11 +83,9 @@ async def tts_worker(app: FastAPI):
 
             project = project_service.get_project(project_id)
 
-            loop = asyncio.get_running_loop()
+            # 纯协程调用，无需线程池
             await asyncio.wait_for(
-                loop.run_in_executor(
-                    ex,
-                    line_service.generate_audio,
+                line_service.generate_audio_async(
                     reference_path,
                     project.tts_provider_id,
                     dto.text_content,

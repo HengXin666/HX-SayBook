@@ -35,6 +35,7 @@ export default function BatchLLMModal({ open, onClose, projectId, onComplete, on
   const [total, setTotal] = useState(0);
   const [chapterStatuses, setChapterStatuses] = useState<Map<number, ChapterStatus>>(new Map());
   const [concurrency, setConcurrency] = useState(1);
+  const [skipParsed, setSkipParsed] = useState(true);
   // 标记是否已经初始化过（防止重复重置正在运行的任务状态）
   const hasInitRef = useRef(false);
 
@@ -172,7 +173,7 @@ export default function BatchLLMModal({ open, onClose, projectId, onComplete, on
     });
 
     try {
-      const res = await batchApi.llmParse({ project_id: projectId, chapter_ids: selectedIds, concurrency });
+      const res = await batchApi.llmParse({ project_id: projectId, chapter_ids: selectedIds, concurrency, skip_parsed: skipParsed });
       if (res.code !== 200) {
         message.error(res.message || '启动失败');
         setRunning(false);
@@ -181,7 +182,7 @@ export default function BatchLLMModal({ open, onClose, projectId, onComplete, on
       message.error('请求失败');
       setRunning(false);
     }
-  }, [selectedIds, projectId, concurrency]);
+  }, [selectedIds, projectId, concurrency, skipParsed]);
 
   const handleCancel = useCallback(async () => {
     setCancelling(true);
@@ -368,6 +369,20 @@ export default function BatchLLMModal({ open, onClose, projectId, onComplete, on
         />
         <Text style={{ color: '#585b70', fontSize: 11 }}>
           同时解析的章节数 (1~10)，并发数越大速度越快，但可能增加 LLM API 压力
+        </Text>
+      </div>
+
+      {/* 跳过已解析章节 */}
+      <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8, background: '#181825', borderRadius: 8, padding: '8px 12px', border: '1px solid #313244' }}>
+        <Checkbox
+          checked={skipParsed}
+          onChange={(e) => setSkipParsed(e.target.checked)}
+          disabled={running}
+        >
+          <Text style={{ color: '#a6adc8', fontSize: 12 }}>跳过已解析的章节</Text>
+        </Checkbox>
+        <Text style={{ color: '#585b70', fontSize: 11 }}>
+          开启后，已有台词数据的章节将自动跳过，避免重复解析
         </Text>
       </div>
 

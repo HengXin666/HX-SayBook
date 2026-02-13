@@ -7,7 +7,6 @@ import asyncio
 import json
 import logging
 import os
-import threading
 import traceback
 from typing import List, Optional
 
@@ -59,6 +58,7 @@ class BatchLLMRequest(BaseModel):
     project_id: int
     chapter_ids: List[int]  # 支持选择章节范围
     concurrency: int = 1  # 并发数，默认1，范围1~10
+    skip_parsed: bool = True  # 跳过已解析过的章节（默认开启）
 
 
 class BatchTTSRequest(BaseModel):
@@ -117,7 +117,7 @@ def _get_services(db: Session):
 # 批量 LLM 任务管理（支持并发 + 取消）
 # ============================================================
 
-# 存储运行中的批量LLM任务: project_id -> {"cancel_event": threading.Event, "task": asyncio.Task}
+# 存储运行中的批量LLM任务: project_id -> {"cancel_event": asyncio.Event, "task": asyncio.Task}
 _batch_llm_tasks: dict = {}
 
 
@@ -134,9 +134,11 @@ async def batch_llm_parse(req: BatchLLMRequest):
         return Res(code=400, message="该项目已有批量LLM任务在运行中，请先取消后再重试")
 
     concurrency = max(1, min(10, req.concurrency))  # 限制并发范围 1~10
-    cancel_event = threading.Event()
+    cancel_event = asyncio.Event()
     task = asyncio.create_task(
-        _do_batch_llm(req.project_id, req.chapter_ids, concurrency, cancel_event)
+        _do_batch_llm(
+            req.project_id, req.chapter_ids, concurrency, cancel_event, req.skip_parsed
+        )
     )
     _batch_llm_tasks[req.project_id] = {"cancel_event": cancel_event, "task": task}
 
@@ -192,26 +194,27 @@ async def batch_llm_cancel(project_id: int):
     return Res(code=200, message="取消信号已发送，任务将在当前章节处理完成后停止")
 
 
-def _process_single_chapter_sync(
+async def _process_single_chapter_async(
     project_id: int,
     chapter_id: int,
     idx: int,
     total: int,
-    cancel_event: threading.Event,
+    cancel_event: asyncio.Event,
     done_counter: dict,
-    broadcast_queue: list,
+    skip_parsed: bool = False,
 ):
     """
-    处理单个章节的LLM解析 —— 纯同步函数，在线程池中执行。
-    所有需要广播的消息都追加到 broadcast_queue 中，由调用方在 async 上下文中发送。
+    纯异步处理单个章节的LLM解析 —— 直接在事件循环中运行，不阻塞。
+    LLM 调用使用 AsyncOpenAI，所有网络 IO 均为非阻塞。
+    当 skip_parsed=True 时，若章节已有台词数据则自动跳过。
     """
 
-    def _push(msg: dict):
-        broadcast_queue.append(msg)
+    async def _broadcast(msg: dict):
+        await manager.broadcast(msg)
 
     # 检查是否已取消
     if cancel_event.is_set():
-        _push(
+        await _broadcast(
             {
                 "event": "batch_llm_progress",
                 "project_id": project_id,
@@ -238,7 +241,7 @@ def _process_single_chapter_sync(
 
         progress = round((done_counter["done"] / total) * 100)
 
-        _push(
+        await _broadcast(
             {
                 "event": "batch_llm_progress",
                 "project_id": project_id,
@@ -254,7 +257,7 @@ def _process_single_chapter_sync(
         chapter = chapter_svc.get_chapter(chapter_id)
         if not chapter or not chapter.text_content:
             done_counter["done"] += 1
-            _push(
+            await _broadcast(
                 {
                     "event": "batch_llm_progress",
                     "project_id": project_id,
@@ -268,10 +271,29 @@ def _process_single_chapter_sync(
             )
             return
 
+        # 跳过已解析过的章节（有台词数据 = 已完成全部段落的LLM解析并写入）
+        if skip_parsed:
+            existing_lines = line_svc.get_all_lines(chapter_id)
+            if len(existing_lines) > 0:
+                done_counter["done"] += 1
+                await _broadcast(
+                    {
+                        "event": "batch_llm_progress",
+                        "project_id": project_id,
+                        "chapter_id": chapter_id,
+                        "current": done_counter["done"],
+                        "total": total,
+                        "progress": round((done_counter["done"] / total) * 100),
+                        "status": "skipped",
+                        "log": f"⏭️ 章节 {chapter_id} 已有 {len(existing_lines)} 条台词，跳过重复解析",
+                    }
+                )
+                return
+
         # 拆分文本
         try:
             contents = chapter_svc.split_text(chapter_id, 1500)
-            _push(
+            await _broadcast(
                 {
                     "event": "batch_llm_log",
                     "project_id": project_id,
@@ -281,7 +303,7 @@ def _process_single_chapter_sync(
             )
         except Exception as e:
             done_counter["done"] += 1
-            _push(
+            await _broadcast(
                 {
                     "event": "batch_llm_progress",
                     "project_id": project_id,
@@ -312,7 +334,7 @@ def _process_single_chapter_sync(
             [project.tts_provider_id, project.llm_provider_id, project.llm_model]
         ):
             done_counter["done"] += 1
-            _push(
+            await _broadcast(
                 {
                     "event": "batch_llm_progress",
                     "project_id": project_id,
@@ -329,7 +351,7 @@ def _process_single_chapter_sync(
         prompt = prompt_svc.get_prompt(project.prompt_id) if project.prompt_id else None
         if not prompt:
             done_counter["done"] += 1
-            _push(
+            await _broadcast(
                 {
                     "event": "batch_llm_progress",
                     "project_id": project_id,
@@ -343,14 +365,14 @@ def _process_single_chapter_sync(
             )
             return
 
-        # 逐段解析
+        # 逐段解析（异步非阻塞）
         all_line_data = []
         parse_success = True
         for seg_idx, content in enumerate(contents):
             # 每段解析前检查取消信号
             if cancel_event.is_set():
                 done_counter["done"] += 1
-                _push(
+                await _broadcast(
                     {
                         "event": "batch_llm_progress",
                         "project_id": project_id,
@@ -364,7 +386,7 @@ def _process_single_chapter_sync(
                 )
                 return
 
-            _push(
+            await _broadcast(
                 {
                     "event": "batch_llm_log",
                     "project_id": project_id,
@@ -374,7 +396,8 @@ def _process_single_chapter_sync(
             )
 
             try:
-                result = chapter_svc.para_content(
+                # 使用异步非阻塞 LLM 调用
+                result = await chapter_svc.para_content_async(
                     prompt.content,
                     chapter_id,
                     content,
@@ -385,7 +408,7 @@ def _process_single_chapter_sync(
                 )
 
                 if not result["success"]:
-                    _push(
+                    await _broadcast(
                         {
                             "event": "batch_llm_log",
                             "project_id": project_id,
@@ -401,7 +424,7 @@ def _process_single_chapter_sync(
                     roles_set.add(ld.role_name)
                 all_line_data.extend(lines_data)
 
-                _push(
+                await _broadcast(
                     {
                         "event": "batch_llm_log",
                         "project_id": project_id,
@@ -412,7 +435,7 @@ def _process_single_chapter_sync(
 
             except Exception as e:
                 logger.error(f"解析失败: {e}\n{traceback.format_exc()}")
-                _push(
+                await _broadcast(
                     {
                         "event": "batch_llm_log",
                         "project_id": project_id,
@@ -443,7 +466,7 @@ def _process_single_chapter_sync(
                 )
 
                 done_counter["done"] += 1
-                _push(
+                await _broadcast(
                     {
                         "event": "batch_llm_progress",
                         "project_id": project_id,
@@ -457,7 +480,7 @@ def _process_single_chapter_sync(
                 )
             except Exception as e:
                 done_counter["done"] += 1
-                _push(
+                await _broadcast(
                     {
                         "event": "batch_llm_progress",
                         "project_id": project_id,
@@ -471,7 +494,7 @@ def _process_single_chapter_sync(
                 )
         else:
             done_counter["done"] += 1
-            _push(
+            await _broadcast(
                 {
                     "event": "batch_llm_progress",
                     "project_id": project_id,
@@ -487,7 +510,7 @@ def _process_single_chapter_sync(
     except Exception as e:
         logger.error(f"批量LLM处理异常: {e}\n{traceback.format_exc()}")
         done_counter["done"] += 1
-        _push(
+        await _broadcast(
             {
                 "event": "batch_llm_progress",
                 "project_id": project_id,
@@ -503,43 +526,14 @@ def _process_single_chapter_sync(
         db.close()
 
 
-async def _process_single_chapter(
-    project_id: int,
-    chapter_id: int,
-    idx: int,
-    total: int,
-    cancel_event: threading.Event,
-    done_counter: dict,
-):
-    """
-    异步包装：在线程池中执行同步的LLM解析，避免阻塞事件循环。
-    线程执行完成后，统一广播所有消息。
-    """
-    broadcast_queue: list = []
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(
-        None,
-        _process_single_chapter_sync,
-        project_id,
-        chapter_id,
-        idx,
-        total,
-        cancel_event,
-        done_counter,
-        broadcast_queue,
-    )
-    # 线程执行完毕，在事件循环中逐条广播消息
-    for msg in broadcast_queue:
-        await manager.broadcast(msg)
-
-
 async def _do_batch_llm(
     project_id: int,
     chapter_ids: List[int],
     concurrency: int,
-    cancel_event: threading.Event,
+    cancel_event: asyncio.Event,
+    skip_parsed: bool = True,
 ):
-    """后台执行批量LLM解析（支持并发 + 取消）"""
+    """后台执行批量LLM解析（支持并发 + 取消，纯协程无线程池）"""
     total = len(chapter_ids)
     semaphore = asyncio.Semaphore(concurrency)
     # 使用 dict 做计数器以便在协程间共享
@@ -552,8 +546,14 @@ async def _do_batch_llm(
         async with semaphore:
             if cancel_event.is_set():
                 return
-            await _process_single_chapter(
-                project_id, chapter_id, idx, total, cancel_event, done_counter
+            await _process_single_chapter_async(
+                project_id,
+                chapter_id,
+                idx,
+                total,
+                cancel_event,
+                done_counter,
+                skip_parsed,
             )
             # 避免过快请求LLM
             await asyncio.sleep(0.3)
@@ -567,9 +567,8 @@ async def _do_batch_llm(
     # 等待完成或取消
     # 启动一个监控协程，取消信号到达时立即 cancel 所有未完成的任务
     async def _cancel_watcher():
-        loop = asyncio.get_running_loop()
-        # threading.Event.wait 是阻塞调用，放到线程池中等待
-        await loop.run_in_executor(None, cancel_event.wait)
+        # asyncio.Event.wait 是非阻塞协程，无需线程池
+        await cancel_event.wait()
         for t in tasks:
             if not t.done():
                 t.cancel()
@@ -1062,9 +1061,9 @@ async def autopilot_start(req: AutopilotRequest):
         return Res(code=400, message="该项目已有挂机任务在运行中，请先取消后再重试")
 
     concurrency = max(1, min(10, req.concurrency))
-    cancel_event = threading.Event()
-    pause_event = threading.Event()  # set = 暂停中
-    resume_event = threading.Event()  # set = 可以继续
+    cancel_event = asyncio.Event()
+    pause_event = asyncio.Event()  # set = 暂停中
+    resume_event = asyncio.Event()  # set = 可以继续
     resume_event.set()  # 默认不暂停
 
     task = asyncio.create_task(
@@ -1202,9 +1201,9 @@ async def autopilot_cancel(project_id: int):
 
 async def _autopilot_wait_resume(
     project_id: int,
-    pause_event: threading.Event,
-    resume_event: threading.Event,
-    cancel_event: threading.Event,
+    pause_event: asyncio.Event,
+    resume_event: asyncio.Event,
+    cancel_event: asyncio.Event,
 ) -> bool:
     """
     检查是否暂停，如果暂停则等待恢复。
@@ -1221,9 +1220,8 @@ async def _autopilot_wait_resume(
                 "log": "⏸️ 任务已暂停，等待用户继续...",
             }
         )
-        # 在线程池中等待恢复信号
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, resume_event.wait)
+        # asyncio.Event.wait 是非阻塞协程，无需线程池
+        await resume_event.wait()
         if cancel_event.is_set():
             return False
         await manager.broadcast(
@@ -1239,32 +1237,20 @@ async def _autopilot_wait_resume(
 async def _autopilot_llm_single_chapter(
     project_id: int,
     chapter_id: int,
-    cancel_event: threading.Event,
+    cancel_event: asyncio.Event,
 ) -> bool:
     """
-    对单个章节执行 LLM 解析。
-    复用现有的 _process_single_chapter_sync 逻辑。
+    对单个章节执行 LLM 解析（纯协程，复用 _process_single_chapter_async）。
     返回 True=成功, False=失败或取消。
     """
-    broadcast_queue: list = []
     done_counter = {"done": 0}
 
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(
-        None,
-        _process_single_chapter_sync,
-        project_id,
-        chapter_id,
-        0,  # idx
-        1,  # total
-        cancel_event,
-        done_counter,
-        broadcast_queue,
-    )
-
+    # 临时替换 manager.broadcast 来捕获事件并改写前缀
+    original_broadcast = manager.broadcast
     success = False
-    for msg in broadcast_queue:
-        # 改写事件名称为 autopilot_ 前缀
+
+    async def _intercepted_broadcast(msg: dict):
+        nonlocal success
         original_event = msg.get("event", "")
         if original_event == "batch_llm_progress":
             msg["event"] = "autopilot_llm_progress"
@@ -1272,7 +1258,20 @@ async def _autopilot_llm_single_chapter(
                 success = True
         elif original_event == "batch_llm_log":
             msg["event"] = "autopilot_llm_log"
-        await manager.broadcast(msg)
+        await original_broadcast(msg)
+
+    manager.broadcast = _intercepted_broadcast
+    try:
+        await _process_single_chapter_async(
+            project_id,
+            chapter_id,
+            0,  # idx
+            1,  # total
+            cancel_event,
+            done_counter,
+        )
+    finally:
+        manager.broadcast = original_broadcast
 
     return success
 
@@ -1281,7 +1280,7 @@ async def _autopilot_tts_single_chapter(
     project_id: int,
     chapter_id: int,
     speed: float,
-    cancel_event: threading.Event,
+    cancel_event: asyncio.Event,
 ) -> bool:
     """
     对单个章节执行 TTS 配音。
@@ -1474,8 +1473,8 @@ async def _autopilot_smart_voice_match(project_id: int) -> dict:
                 break
 
         prompt = get_add_smart_role_and_voice(context_text, unbound_names, voice_names)
-        result = llm.generate_smart_text(prompt)
-        parse_data = llm.save_load_json(result)
+        result = await llm.generate_smart_text_async(prompt)
+        parse_data = await llm.save_load_json_async(result)
 
         matched = []
         still_unmatched = list(unbound_names)
@@ -1548,9 +1547,9 @@ async def _do_autopilot(
     speed: float,
     voice_match_interval: int,
     manual_voice_assign: bool,
-    cancel_event: threading.Event,
-    pause_event: threading.Event,
-    resume_event: threading.Event,
+    cancel_event: asyncio.Event,
+    pause_event: asyncio.Event,
+    resume_event: asyncio.Event,
 ):
     """
     一键挂机核心流程（并行流水线模式）：
@@ -1826,9 +1825,9 @@ async def _autopilot_check_voice_match(
     chapters_since_last_match: int,
     voice_match_interval: int,
     manual_voice_assign: bool,
-    pause_event: threading.Event,
-    resume_event: threading.Event,
-    cancel_event: threading.Event,
+    pause_event: asyncio.Event,
+    resume_event: asyncio.Event,
+    cancel_event: asyncio.Event,
 ):
     """
     检查是否需要进行音色匹配（从 _do_autopilot 中抽取出来的逻辑）。

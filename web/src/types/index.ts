@@ -168,6 +168,8 @@ export interface BatchLLMRequest {
   project_id: number;
   chapter_ids: number[];
   concurrency?: number;
+  /** 是否跳过已解析过的章节（默认 true） */
+  skip_parsed?: boolean;
 }
 
 /** 批量TTS请求 */
