@@ -71,6 +71,7 @@ app = FastAPI(
     title="HX-SayBook - AI 多角色小说配音",
     description="基于 SonicVale(音谷) 二次开发的 AI 多角色多情绪小说配音系统",
     version="2.0.0",
+    redirect_slashes=False,  # 禁止自动 307 重定向（/path/ ↔ /path），统一不带尾部斜杠
 )
 
 # CORS - 允许 React dev server 和生产环境

@@ -45,7 +45,7 @@ def get_role_service(db: Session = Depends(get_db)) -> RoleService:
 
 
 @router.post(
-    "/",
+    "",
     response_model=Res[ProjectResponseDTO],
     summary="创建项目",
     description="根据项目信息创建项目，项目名称不可重复",
@@ -94,7 +94,7 @@ def get_project(project_id: int, service: ProjectService = Depends(get_service))
 
 
 @router.get(
-    "/",
+    "",
     response_model=Res[List[ProjectResponseDTO]],
     summary="查询所有项目",
     description="查询所有项目信息",

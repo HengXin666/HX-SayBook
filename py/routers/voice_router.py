@@ -158,7 +158,7 @@ def get_audio_file(path: str):
 
 
 @router.get(
-    "/",
+    "",
     response_model=Res[List[VoiceResponseDTO]],
     summary="查询音色列表",
     description="根据可选的tts_provider_id查询音色列表，不传则默认查tts_provider_id=1",
