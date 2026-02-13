@@ -70,7 +70,7 @@ logger = logging.getLogger("hx-saybook")
 app = FastAPI(
     title="HX-SayBook - AI 多角色小说配音",
     description="基于 SonicVale(音谷) 二次开发的 AI 多角色多情绪小说配音系统",
-version="2.3.0",
+    version="2.3.0",
     redirect_slashes=False,  # 禁止自动 307 重定向（/path/ ↔ /path），统一不带尾部斜杠
 )
 
@@ -313,7 +313,7 @@ app.include_router(batch_router.router)
 # ============================================================
 @app.get("/", tags=["System"])
 def read_root():
-return {"msg": "HX-SayBook 后端服务运行中！", "version": "2.3.0"}
+    return {"msg": "HX-SayBook 后端服务运行中！", "version": "2.3.0"}
 
 
 @app.get("/api/health", tags=["System"])
