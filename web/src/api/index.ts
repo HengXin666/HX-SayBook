@@ -55,6 +55,8 @@ export const lineApi = {
   exportAudio: (chapterId: number, single?: boolean) => api.get<unknown, Res>(`/lines/export-audio/${chapterId}`, { params: { single } }),
   correctSubtitle: (chapterId: number) => api.post<unknown, Res>(`/lines/correct-subtitle/${chapterId}`),
   mergeExport: (data: { project_id: number; chapter_ids: number[]; group_size: number; max_duration_minutes: number }) => api.post<unknown, Res>('/lines/merge-export', data),
+  /** 单章节一键导出（音频MP3 + SRT/ASS字幕） */
+  exportChapter: (chapterId: number) => api.get<unknown, Res>(`/lines/export-chapter/${chapterId}`),
 };
 
 // ============================================================

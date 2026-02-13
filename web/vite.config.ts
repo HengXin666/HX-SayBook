@@ -14,6 +14,11 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ''),
       },
+      // 静态资源（音频、字幕等）代理到后端
+      '/static': {
+        target: 'http://127.0.0.1:8200',
+        changeOrigin: true,
+      },
       '/ws': {
         target: 'ws://127.0.0.1:8200',
         ws: true,

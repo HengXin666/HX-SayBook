@@ -413,6 +413,42 @@ async def correct_subtitle(
     return Res(data=None, code=200, message="生成成功")
 
 
+# 单章节一键导出（音频 + 字幕）
+@router.get("/export-chapter/{chapter_id}")
+async def export_chapter_audio_with_subtitle(
+    chapter_id: int,
+    line_service: LineService = Depends(get_line_service),
+    project_service: ProjectService = Depends(get_project_service),
+    chapter_service: ChapterService = Depends(get_chapter_service),
+):
+    """
+    单章节一键导出：合并音频为 MP3 + 生成 SRT/ASS 字幕。
+    如果音频导出失败，则不导出字幕文件。
+    """
+    # 获取章节信息
+    chapter = chapter_service.get_chapter(chapter_id)
+    if not chapter:
+        return Res(data=None, code=404, message="章节不存在")
+
+    project = project_service.get_project(chapter.project_id)
+    if not project:
+        return Res(data=None, code=404, message="项目不存在")
+
+    project_root_path = project.project_root_path or getConfigPath()
+
+    result = line_service.export_chapter_audio_with_subtitle(
+        chapter_id=chapter_id,
+        project_root_path=project_root_path,
+        project_id=chapter.project_id,
+        chapter_title=chapter.title,
+    )
+
+    if not result["success"]:
+        return Res(data=None, code=400, message=result["message"])
+
+    return Res(data=result, code=200, message=result["message"])
+
+
 # 合并多章节音频为 MP3 导出
 from pydantic import BaseModel
 
