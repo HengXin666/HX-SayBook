@@ -3,6 +3,7 @@ import {
   DeleteOutlined,
   DownloadOutlined,
   EditOutlined,
+  FileTextOutlined,
   MergeCellsOutlined,
   PauseCircleOutlined,
   PlayCircleOutlined,
@@ -153,7 +154,7 @@ export default function ProjectDetail() {
   const [mergeGroupSize, setMergeGroupSize] = useState(1);
   const [mergeDurationMinutes, setMergeDurationMinutes] = useState(30);
   const [mergeLoading, setMergeLoading] = useState(false);
-  const [mergeResults, setMergeResults] = useState<{ name: string; url: string; chapters: string[]; duration?: string }[] | null>(null);
+  const [mergeResults, setMergeResults] = useState<{ name: string; url: string; chapters: string[]; duration?: string; subtitles?: Record<string, string> }[] | null>(null);
   // 合并导出范围选择
   const [mergeRangeStart, setMergeRangeStart] = useState<number>(1);
   const [mergeRangeEnd, setMergeRangeEnd] = useState<number>(1);
@@ -871,6 +872,64 @@ export default function ProjectDetail() {
     }
   };
 
+  // ==================== 单章节一键导出（音频+字幕） ====================
+  const [chapterExportLoading, setChapterExportLoading] = useState(false);
+  const [chapterExportResult, setChapterExportResult] = useState<{
+    audio_url: string;
+    subtitles: Record<string, string>;
+    duration: string;
+    chapter_title: string;
+  } | null>(null);
+  const [chapterExportModalOpen, setChapterExportModalOpen] = useState(false);
+
+  const handleExportChapterWithSubtitle = async () => {
+    if (!activeChapterId) return;
+    setChapterExportLoading(true);
+    setChapterExportResult(null);
+    try {
+      const res = await lineApi.exportChapter(activeChapterId);
+      if (res.code === 200 && res.data) {
+        const data = res.data as {
+          audio_url: string;
+          subtitles: Record<string, string>;
+          duration: string;
+          chapter_title: string;
+        };
+        setChapterExportResult(data);
+        setChapterExportModalOpen(true);
+        message.success('导出成功');
+      } else {
+        message.error(res.message || '导出失败');
+      }
+    } catch {
+      message.error('导出请求失败');
+    } finally {
+      setChapterExportLoading(false);
+    }
+  };
+
+  // ==================== 通用文件下载工具 ====================
+  const handleDownloadFile = async (url: string, filename?: string) => {
+    const name = filename || url.split('/').pop()?.split('?')[0] || 'download';
+    try {
+      const resp = await fetch(url);
+      const blob = await resp.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = name;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(blobUrl);
+    } catch (e) {
+      // fetch 失败时回退到直接打开
+      console.error('下载失败，回退到直接打开:', e);
+      window.open(url, '_blank');
+    }
+  };
+
   // ==================== 合并导出 ====================
   const openMergeModal = () => {
     setMergeSelectedChapters([]);
@@ -897,7 +956,7 @@ export default function ProjectDetail() {
         max_duration_minutes: mergeMode === 'duration' ? mergeDurationMinutes : 0,
       });
       if (res.code === 200 && res.data) {
-        const data = res.data as { files: { name: string; url: string; chapters: string[]; duration?: string }[] };
+        const data = res.data as { files: { name: string; url: string; chapters: string[]; duration?: string; subtitles?: Record<string, string> }[] };
         setMergeResults(data.files);
         message.success(res.message || '合并完成');
       } else {
@@ -1536,6 +1595,17 @@ export default function ProjectDetail() {
                           <Button size="small" type="default" icon={<DownloadOutlined />} onClick={handleExport} style={{ background: '#52c41a', color: '#fff', borderColor: '#52c41a' }}>
                             导出
                           </Button>
+                          <Tooltip title="一键导出本章音频(MP3)+字幕(SRT/ASS)">
+                            <Button
+                              size="small"
+                              icon={<FileTextOutlined />}
+                              loading={chapterExportLoading}
+                              onClick={handleExportChapterWithSubtitle}
+                              style={{ background: '#13c2c2', color: '#fff', borderColor: '#13c2c2' }}
+                            >
+                              导出音频+字幕
+                            </Button>
+                          </Tooltip>
                         </div>
 
                         {/* 台词表格 */}
@@ -1841,7 +1911,7 @@ export default function ProjectDetail() {
             <div style={{ marginTop: 12 }}>
               {mergeResults.map((file, idx) => (
                 <Card key={idx} size="small" style={{ marginBottom: 8 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div>
                       <Typography.Text strong>{file.name}</Typography.Text>
                       {file.duration && (
@@ -1852,15 +1922,26 @@ export default function ProjectDetail() {
                         包含章节：{file.chapters.join('、')}
                       </Typography.Text>
                     </div>
-                    <Button
-                      type="primary"
-                      size="small"
-                      icon={<DownloadOutlined />}
-                      href={file.url}
-                      target="_blank"
-                    >
-                      下载
-                    </Button>
+                    <Space>
+                      <Button
+                        type="primary"
+                        size="small"
+                        icon={<DownloadOutlined />}
+                        onClick={() => handleDownloadFile(file.url, file.name)}
+                      >
+                        音频
+                      </Button>
+                      {file.subtitles?.srt && (
+                        <Button size="small" icon={<FileTextOutlined />} onClick={() => handleDownloadFile(file.subtitles!.srt)}>
+                          SRT
+                        </Button>
+                      )}
+                      {file.subtitles?.ass && (
+                        <Button size="small" icon={<FileTextOutlined />} onClick={() => handleDownloadFile(file.subtitles!.ass)}>
+                          ASS
+                        </Button>
+                      )}
+                    </Space>
                   </div>
                 </Card>
               ))}
@@ -1994,6 +2075,83 @@ export default function ProjectDetail() {
                 </Typography.Text>
               </div>
             )}
+          </div>
+        )}
+      </Modal>
+
+      {/* 单章节导出结果弹窗 */}
+      <Modal
+        title="章节导出结果"
+        open={chapterExportModalOpen}
+        onCancel={() => setChapterExportModalOpen(false)}
+        footer={[
+          <Button key="close" onClick={() => setChapterExportModalOpen(false)}>关闭</Button>,
+        ]}
+        width={520}
+        destroyOnClose
+      >
+        {chapterExportResult && (
+          <div>
+            <Typography.Text type="success" strong>
+              「{chapterExportResult.chapter_title}」导出成功！
+            </Typography.Text>
+            <Tag color="blue" style={{ marginLeft: 8 }}>{chapterExportResult.duration}</Tag>
+            <Divider style={{ margin: '12px 0' }} />
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <Card size="small">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Space>
+                    <SoundOutlined style={{ color: '#52c41a' }} />
+                    <Typography.Text>音频文件 (MP3)</Typography.Text>
+                  </Space>
+                  <Button
+                    type="primary"
+                    size="small"
+                    icon={<DownloadOutlined />}
+                    onClick={() => handleDownloadFile(chapterExportResult.audio_url, `${chapterExportResult.chapter_title}.mp3`)}
+                  >
+                    下载
+                  </Button>
+                </div>
+              </Card>
+
+              {chapterExportResult.subtitles?.srt && (
+                <Card size="small">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Space>
+                      <FileTextOutlined style={{ color: '#1890ff' }} />
+                      <Typography.Text>SRT 字幕文件</Typography.Text>
+                    </Space>
+                    <Button
+                      size="small"
+                      icon={<DownloadOutlined />}
+                      onClick={() => handleDownloadFile(chapterExportResult.subtitles!.srt, `${chapterExportResult.chapter_title}.srt`)}
+                    >
+                      下载
+                    </Button>
+                  </div>
+                </Card>
+              )}
+
+              {chapterExportResult.subtitles?.ass && (
+                <Card size="small">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Space>
+                      <FileTextOutlined style={{ color: '#722ed1' }} />
+                      <Typography.Text>ASS 字幕文件</Typography.Text>
+                    </Space>
+                    <Button
+                      size="small"
+                      icon={<DownloadOutlined />}
+                      onClick={() => handleDownloadFile(chapterExportResult.subtitles!.ass, `${chapterExportResult.chapter_title}.ass`)}
+                    >
+                      下载
+                    </Button>
+                  </div>
+                </Card>
+              )}
+            </div>
           </div>
         )}
       </Modal>

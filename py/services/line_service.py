@@ -16,6 +16,7 @@ from sqlalchemy import Sequence
 from py.core.audio_engin import AudioProcessor
 from py.core.config import getConfigPath, getFfmpegPath
 from py.core.subtitle import subtitle_engine
+from py.core.subtitle_export import build_subtitle_segments, generate_subtitle_files
 from py.core.tts_engine import TTSEngine
 from py.dto.line_dto import LineCreateDTO, LineOrderDTO, LineAudioProcessDTO
 from py.entity.line_entity import LineEntity
@@ -873,6 +874,42 @@ class LineService:
             duration_min = int(group_duration // 60)
             duration_sec = int(group_duration % 60)
 
+            # ------ 为合并的 MP3 生成对应字幕文件 ------
+            group_lines_info = []
+            for cid in group:
+                if cid not in chapter_audio_map:
+                    continue
+                lines = self.repository.get_all(cid)
+                for line in lines:
+                    if line.audio_path and os.path.exists(line.audio_path):
+                        role = (
+                            self.role_repository.get_by_id(line.role_id)
+                            if line.role_id
+                            else None
+                        )
+                        group_lines_info.append(
+                            {
+                                "text": line.text_content or "",
+                                "audio_path": line.audio_path,
+                                "role_name": role.name if role else "",
+                            }
+                        )
+
+            subtitle_base = os.path.splitext(safe_name)[0]
+            subtitle_files = generate_subtitle_files(
+                lines_info=group_lines_info,
+                output_dir=merge_dir,
+                base_name=subtitle_base,
+                formats=["srt", "ass"],
+                include_role=True,
+            )
+
+            # 字幕静态路径
+            subtitle_urls = {}
+            for fmt, spath in subtitle_files.items():
+                rel = os.path.relpath(spath, project_root_path)
+                subtitle_urls[fmt] = f"/static/audio/{rel}"
+
             result_files.append(
                 {
                     "name": safe_name,
@@ -881,6 +918,7 @@ class LineService:
                     "chapters": group_chapter_names,
                     "duration": f"{duration_min}分{duration_sec:02d}秒",
                     "duration_seconds": round(group_duration, 1),
+                    "subtitles": subtitle_urls,
                 }
             )
 
@@ -904,6 +942,138 @@ class LineService:
     #     字幕矫正
     def correct_subtitle(self, text, output_subtitle_path):
         subtitle_engine.correct_srt_file(text, output_subtitle_path)
+
+    def export_chapter_audio_with_subtitle(
+        self,
+        chapter_id: int,
+        project_root_path: str,
+        project_id: int,
+        chapter_title: str = "",
+    ) -> dict:
+        """
+        单章节一键导出：合并音频 + 生成 SRT/ASS 字幕。
+
+        如果音频导出失败（无有效音频），则不导出字幕，返回错误信息。
+
+        返回值:
+        {
+            "success": True/False,
+            "message": "...",
+            "audio_path": "/path/to/merged.wav",
+            "audio_url": "/static/audio/...",
+            "subtitles": { "srt": "/static/audio/...", "ass": "/static/audio/..." },
+            "duration": "1分23秒",
+        }
+        """
+        lines = self.repository.get_all(chapter_id)
+        if not lines:
+            return {"success": False, "message": "该章节没有台词记录"}
+
+        paths = [
+            line.audio_path
+            for line in lines
+            if line.audio_path and os.path.exists(line.audio_path)
+        ]
+        if not paths:
+            return {"success": False, "message": "该章节没有已生成的音频文件"}
+
+        # 输出目录
+        output_dir = os.path.join(
+            project_root_path, str(project_id), str(chapter_id), "export"
+        )
+        os.makedirs(output_dir, exist_ok=True)
+
+        # 安全文件名
+        safe_title = "".join(
+            c if c.isalnum() or c in "-_. " else "_"
+            for c in (chapter_title or str(chapter_id))
+        )
+
+        # ---- 步骤1: 合并音频 ----
+        wav_path = os.path.join(output_dir, f"{safe_title}.wav")
+        try:
+            self.concat_wav_files(paths, wav_path)
+        except Exception as e:
+            return {"success": False, "message": f"合并音频失败: {str(e)}"}
+
+        # 音频导出成功，继续转 MP3
+        ffmpeg_path = getFfmpegPath()
+        mp3_path = os.path.join(output_dir, f"{safe_title}.mp3")
+        try:
+            cmd = [
+                ffmpeg_path,
+                "-y",
+                "-i",
+                wav_path,
+                "-codec:a",
+                "libmp3lame",
+                "-qscale:a",
+                "2",
+                mp3_path,
+            ]
+            subprocess.run(
+                cmd,
+                check=True,
+                creationflags=(
+                    subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+                ),
+            )
+        except Exception as e:
+            return {"success": False, "message": f"WAV 转 MP3 失败: {str(e)}"}
+        finally:
+            # 清理临时 WAV
+            if os.path.exists(wav_path):
+                os.remove(wav_path)
+
+        # ---- 步骤2: 音频导出成功，生成字幕 ----
+        lines_info = []
+        for line in lines:
+            if line.audio_path and os.path.exists(line.audio_path):
+                role = (
+                    self.role_repository.get_by_id(line.role_id)
+                    if line.role_id
+                    else None
+                )
+                lines_info.append(
+                    {
+                        "text": line.text_content or "",
+                        "audio_path": line.audio_path,
+                        "role_name": role.name if role else "",
+                    }
+                )
+
+        subtitle_files = generate_subtitle_files(
+            lines_info=lines_info,
+            output_dir=output_dir,
+            base_name=safe_title,
+            formats=["srt", "ass"],
+            include_role=True,
+        )
+
+        # 计算时长
+        total_duration = self._get_chapter_duration(paths)
+        duration_min = int(total_duration // 60)
+        duration_sec = int(total_duration % 60)
+
+        # 构建 URL
+        mp3_rel = os.path.relpath(mp3_path, project_root_path)
+        mp3_url = f"/static/audio/{mp3_rel}"
+
+        subtitle_urls = {}
+        for fmt, spath in subtitle_files.items():
+            rel = os.path.relpath(spath, project_root_path)
+            subtitle_urls[fmt] = f"/static/audio/{rel}"
+
+        return {
+            "success": True,
+            "message": "导出成功",
+            "audio_path": mp3_path,
+            "audio_url": mp3_url,
+            "subtitles": subtitle_urls,
+            "duration": f"{duration_min}分{duration_sec:02d}秒",
+            "duration_seconds": round(total_duration, 1),
+            "chapter_title": chapter_title,
+        }
 
 
 #     生成字幕
