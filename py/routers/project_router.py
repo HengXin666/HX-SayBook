@@ -28,23 +28,31 @@ router = APIRouter(prefix="/projects", tags=["Projects"])
 
 # 依赖注入（实际项目可用 DI 容器）
 
+
 def get_service(db: Session = Depends(get_db)) -> ProjectService:
     repository = ProjectRepository(db)  # ✅ 传入 db
     return ProjectService(repository)
 
+
 def get_chapter_service(db: Session = Depends(get_db)) -> ChapterService:
     repository = ChapterRepository(db)  # ✅ 传入 db
     return ChapterService(repository)
+
 
 def get_role_service(db: Session = Depends(get_db)) -> RoleService:
     repository = RoleRepository(db)  # ✅ 传入 db
     return RoleService(repository)
 
 
-@router.post("/", response_model=Res[ProjectResponseDTO],
-             summary="创建项目",
-             description="根据项目信息创建项目，项目名称不可重复")
-def create_project(dto: ProjectCreateDTO, service: ProjectService = Depends(get_service)):
+@router.post(
+    "/",
+    response_model=Res[ProjectResponseDTO],
+    summary="创建项目",
+    description="根据项目信息创建项目，项目名称不可重复",
+)
+def create_project(
+    dto: ProjectCreateDTO, service: ProjectService = Depends(get_service)
+):
     """
     创建项目
     - dto: 前端 POST JSON 传入参数
@@ -55,7 +63,7 @@ def create_project(dto: ProjectCreateDTO, service: ProjectService = Depends(get_
         entity = ProjectEntity(**dto.__dict__)
 
         # 调用 Service 创建项目（返回 True/False）
-        entityRes,message = service.create_project(entity)
+        entityRes, message = service.create_project(entity)
 
         # 返回统一 Response
         if entityRes is not None:
@@ -68,10 +76,14 @@ def create_project(dto: ProjectCreateDTO, service: ProjectService = Depends(get_
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
 # 按id查找
-@router.get("/{project_id}", response_model=Res[ProjectResponseDTO],
-            summary="查询项目",
-            description="根据项目ID查询项目信息")
+@router.get(
+    "/{project_id}",
+    response_model=Res[ProjectResponseDTO],
+    summary="查询项目",
+    description="根据项目ID查询项目信息",
+)
 def get_project(project_id: int, service: ProjectService = Depends(get_service)):
     entity = service.get_project(project_id)
     if entity:
@@ -80,9 +92,13 @@ def get_project(project_id: int, service: ProjectService = Depends(get_service))
     else:
         return Res(data=None, code=404, message="项目不存在")
 
-@router.get("/", response_model=Res[List[ProjectResponseDTO]],
-            summary="查询所有项目",
-            description="查询所有项目信息")
+
+@router.get(
+    "/",
+    response_model=Res[List[ProjectResponseDTO]],
+    summary="查询所有项目",
+    description="查询所有项目信息",
+)
 def get_all_projects(service: ProjectService = Depends(get_service)):
     entities = service.get_all_projects()
     dtos = [ProjectResponseDTO(**e.__dict__) for e in entities]
@@ -90,17 +106,24 @@ def get_all_projects(service: ProjectService = Depends(get_service)):
 
 
 # ------------------- 修改项目 -------------------
-@router.put("/{project_id}", response_model=Res[ProjectCreateDTO],
-            summary="修改项目",
-            description="根据项目ID修改项目信息")
-def update_project(project_id: int, dto: ProjectCreateDTO, service: ProjectService = Depends(get_service)):
+@router.put(
+    "/{project_id}",
+    response_model=Res[ProjectCreateDTO],
+    summary="修改项目",
+    description="根据项目ID修改项目信息",
+)
+def update_project(
+    project_id: int,
+    dto: ProjectCreateDTO,
+    service: ProjectService = Depends(get_service),
+):
 
     # 先根据id进行查找
     project = service.get_project(project_id)
     if not project:
         return Res(data=None, code=400, message="项目不存在")
 
-    success = service.update_project(project_id,dto.dict())
+    success = service.update_project(project_id, dto.dict())
     if success:
         return Res(data=dto, code=200, message="更新成功")
     else:
@@ -108,15 +131,23 @@ def update_project(project_id: int, dto: ProjectCreateDTO, service: ProjectServi
 
 
 # ------------------- 删除项目 -------------------
-@router.delete("/{project_id}", response_model=Res,
-               summary="删除项目",
-               description="根据项目ID删除项目,并且级联删除项目下所有章节以及内容")
-def delete_project(project_id: int, service: ProjectService = Depends(get_service), chapter_service: ChapterService = Depends(get_chapter_service),role_service: RoleService = Depends(get_role_service)):
+@router.delete(
+    "/{project_id}",
+    response_model=Res,
+    summary="删除项目",
+    description="根据项目ID删除项目,并且级联删除项目下所有章节以及内容",
+)
+def delete_project(
+    project_id: int,
+    service: ProjectService = Depends(get_service),
+    chapter_service: ChapterService = Depends(get_chapter_service),
+    role_service: RoleService = Depends(get_role_service),
+):
 
     # 级联删除项目所有相关内容，比如项目下所有章节以及内容
     entities = chapter_service.get_all_chapters(project_id)
     for entity in entities:
-        chapter_service.delete_chapter(entity.id)
+        chapter_service.delete_chapter(entity["id"])
     #     删除project目录
     project = service.get_project(project_id)
 
@@ -137,10 +168,15 @@ def delete_project(project_id: int, service: ProjectService = Depends(get_servic
     else:
         return Res(data=None, code=400, message="删除失败或项目不存在")
 
+
 # 直接导入整本小说内容，然后解析，创建章节
 @router.post("/{project_id}/import")
-def import_project(project_id: int, dto: ProjectImportDTO,service: ProjectService = Depends(get_service),
-                   chapter_service: ChapterService = Depends(get_chapter_service)):
+def import_project(
+    project_id: int,
+    dto: ProjectImportDTO,
+    service: ProjectService = Depends(get_service),
+    chapter_service: ChapterService = Depends(get_chapter_service),
+):
 
     content = dto.content
     # 删除该项目下的所有章节
@@ -157,5 +193,7 @@ def import_project(project_id: int, dto: ProjectImportDTO,service: ProjectServic
         name = chapter_content["chapter_name"]
         content = chapter_content["content"]
         print("批量创建章节", name)
-        chapter_service.create_chapter(ChapterEntity(project_id=project_id, title=name, text_content=content))
+        chapter_service.create_chapter(
+            ChapterEntity(project_id=project_id, title=name, text_content=content)
+        )
     return Res(code=200, message="导入成功")

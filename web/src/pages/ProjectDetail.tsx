@@ -42,13 +42,13 @@ import {
   Typography
 } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { chapterApi, emotionApi, lineApi, llmProviderApi, projectApi, promptApi, roleApi, strengthApi, ttsProviderApi, voiceApi } from '../api';
 import BatchLLMModal from '../components/BatchLLMModal';
 import BatchTTSModal from '../components/BatchTTSModal';
 import SpeedControl from '../components/SpeedControl';
 import { useWebSocket } from '../hooks/useWebSocket';
-import type { Chapter, Emotion, Line, LLMProvider, Project, Prompt, Role, Strength, TTSProvider, Voice, WSEvent } from '../types';
+import type { Chapter, ChapterBrief, Emotion, Line, LLMProvider, Project, Prompt, Role, Strength, TTSProvider, Voice, WSEvent } from '../types';
 
 const { Sider, Content } = Layout;
 const { Title, Text } = Typography;
@@ -57,16 +57,32 @@ export default function ProjectDetail() {
   const { id } = useParams<{ id: string }>();
   const projectId = Number(id);
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { subscribe } = useWebSocket();
 
   // ==================== 项目数据 ====================
   const [project, setProject] = useState<Project | null>(null);
 
   // ==================== 章节数据 ====================
-  const [chapters, setChapters] = useState<Chapter[]>([]);
-  const [activeChapterId, setActiveChapterId] = useState<number | null>(null);
+  const [chapters, setChapters] = useState<ChapterBrief[]>([]); // 侧边栏分页列表
+  const [chapterTotal, setChapterTotal] = useState(0); // 章节总数
+  const [chapterLoading, setChapterLoading] = useState(false); // 加载中
+  const [chapterHasMore, setChapterHasMore] = useState(true); // 向下是否还有更多
+  const [chapterHasLess, setChapterHasLess] = useState(false); // 向上是否还有更多
+  const [chapterOffsetStart, setChapterOffsetStart] = useState(0); // 当前窗口起始偏移
+  const CHAPTER_PAGE_SIZE = 50;
+  // 从 URL 参数或 localStorage 恢复选中的章节
+  const [activeChapterId, setActiveChapterId] = useState<number | null>(() => {
+    const chapterParam = searchParams.get('chapter');
+    if (chapterParam) return Number(chapterParam);
+    // 从 localStorage 恢复
+    const saved = localStorage.getItem(`saybook_last_chapter_${id}`);
+    return saved ? Number(saved) : null;
+  });
+  const [currentChapterDetail, setCurrentChapterDetail] = useState<Chapter | null>(null); // 选中章节的完整数据
   const [chapterKeyword, setChapterKeyword] = useState('');
   const [chapterCollapsed, setChapterCollapsed] = useState(true);
+  const [allChapters, setAllChapters] = useState<ChapterBrief[]>([]); // 全量轻量列表（合并/批量弹窗用）
 
   // ==================== 台词数据 ====================
   const [lines, setLines] = useState<Line[]>([]);
@@ -133,6 +149,7 @@ export default function ProjectDetail() {
 
   // ==================== 播放状态 ====================
   const audioRef = useRef(new Audio());
+  const chapterListRef = useRef<HTMLDivElement>(null);
   const [playingLineId, setPlayingLineId] = useState<number | null>(null);
   const [playingVoiceId, setPlayingVoiceId] = useState<number | null>(null);
 
@@ -140,18 +157,9 @@ export default function ProjectDetail() {
   const [queueRestSize, setQueueRestSize] = useState(0);
   const [activeTab, setActiveTab] = useState('lines');
 
-
-
-
-
   // ==================== 计算值 ====================
-  const currentChapter = useMemo(() => chapters.find((c) => c.id === activeChapterId) || null, [chapters, activeChapterId]);
-  const currentChapterContent = currentChapter?.text_content || '';
-
-  const filteredChapters = useMemo(() => {
-    const kw = chapterKeyword.trim().toLowerCase();
-    return chapters.filter((c) => c.title.toLowerCase().includes(kw));
-  }, [chapters, chapterKeyword]);
+  const currentChapter = currentChapterDetail;
+  const currentChapterContent = currentChapterDetail?.text_content || '';
 
   const displayedLines = useMemo(() => {
     const kw = lineKeyword.trim().toLowerCase();
@@ -187,11 +195,98 @@ export default function ProjectDetail() {
     if (res.code === 200 && res.data) setProject(res.data);
   }, [projectId]);
 
-  const loadChapters = useCallback(async () => {
-    const res = await chapterApi.getByProject(projectId);
-    if (res.data) setChapters(res.data);
-    else setChapters([]);
+  // 加载章节列表：支持 append（向下追加）和 prepend（向上插入）
+  const loadChaptersRef = useRef(false); // 防止并发请求
+  const scrollLockRef = useRef(false); // 锁定滚动加载（navigateToChapter/scrollIntoView 期间）
+  const lastDirectionRef = useRef<'replace' | 'append' | 'prepend'>('replace'); // 记录上次加载方向
+  const loadChapters = useCallback(async (
+    page = 1,
+    keyword = '',
+    direction: 'replace' | 'append' | 'prepend' = 'replace'
+  ) => {
+    if (loadChaptersRef.current) return;
+    loadChaptersRef.current = true;
+    setChapterLoading(true);
+    lastDirectionRef.current = direction;
+    try {
+      const res = await chapterApi.getPage(projectId, { page, page_size: CHAPTER_PAGE_SIZE, keyword });
+      if (res.data) {
+        const { items, total, page: currentPage } = res.data;
+        const offset = (currentPage - 1) * CHAPTER_PAGE_SIZE;
+        setChapterTotal(total);
+
+        if (direction === 'append') {
+          // 向下追加
+          setChapters(prev => [...prev, ...items]);
+          setChapterHasMore(offset + items.length < total);
+        } else if (direction === 'prepend') {
+          // 向上插入：先记录旧高度，等 DOM 更新后补偿滚动位置
+          const listEl = chapterListRef.current;
+          const prevScrollHeight = listEl?.scrollHeight ?? 0;
+          setChapters(prev => [...items, ...prev]);
+          setChapterOffsetStart(offset);
+          setChapterHasLess(offset > 0);
+          // DOM 更新后补偿滚动位置，避免跳变
+          requestAnimationFrame(() => {
+            if (listEl) {
+              listEl.scrollTop += listEl.scrollHeight - prevScrollHeight;
+            }
+          });
+        } else {
+          // 替换（搜索/初始化）
+          setChapters(items);
+          setChapterOffsetStart(offset);
+          setChapterHasLess(offset > 0);
+          setChapterHasMore(offset + items.length < total);
+        }
+      } else {
+        if (direction === 'replace') {
+          setChapters([]);
+          setChapterOffsetStart(0);
+        }
+        setChapterHasMore(false);
+        setChapterHasLess(false);
+      }
+    } finally {
+      setChapterLoading(false);
+      loadChaptersRef.current = false;
+    }
   }, [projectId]);
+
+  // 跳转到指定章节：查询位置 → 只加载该位置附近的数据
+  const navigateToChapter = useCallback(async (chapterId: number) => {
+    // 锁定滚动加载，避免 replace 后 scrollTop=0 触发向上加载死循环
+    scrollLockRef.current = true;
+    try {
+      const posRes = await chapterApi.getPosition(projectId, chapterId, CHAPTER_PAGE_SIZE);
+      if (posRes.data) {
+        const { page } = posRes.data;
+        // 只加载目标所在的那一页（约50条），不从头开始
+        await loadChapters(page, '', 'replace');
+      } else {
+        // 章节不存在，回退加载第1页
+        await loadChapters(1, '', 'replace');
+      }
+    } catch {
+      await loadChapters(1, '', 'replace');
+    }
+    // 延迟解锁：等 scrollIntoView 完成后再允许滚动加载
+    setTimeout(() => { scrollLockRef.current = false; }, 800);
+  }, [projectId, loadChapters]);
+
+  // 加载全量轻量章节列表（给批量/合并弹窗用）
+  const loadAllChapters = useCallback(async () => {
+    const res = await chapterApi.getByProject(projectId);
+    if (res.data) setAllChapters(res.data);
+    else setAllChapters([]);
+  }, [projectId]);
+
+  // 加载选中章节的完整数据（含 text_content）
+  const loadChapterDetail = useCallback(async (chapterId: number) => {
+    const res = await chapterApi.get(chapterId);
+    if (res.data) setCurrentChapterDetail(res.data);
+    else setCurrentChapterDetail(null);
+  }, []);
 
   const loadLines = useCallback(async () => {
     if (!activeChapterId) return;
@@ -237,7 +332,12 @@ export default function ProjectDetail() {
   useEffect(() => {
     if (projectId) {
       loadProject();
-      loadChapters();
+      // 如果有记忆的章节，直接跳转到该章节所在位置；否则从第1页开始
+      if (activeChapterId) {
+        navigateToChapter(activeChapterId);
+      } else {
+        loadChapters(1, '');
+      }
       loadRoles();
       loadEnums();
     }
@@ -249,7 +349,38 @@ export default function ProjectDetail() {
 
   useEffect(() => {
     loadLines();
+    // 加载选中章节的完整数据
+    if (activeChapterId) {
+      loadChapterDetail(activeChapterId);
+    } else {
+      setCurrentChapterDetail(null);
+    }
   }, [activeChapterId]);
+
+  // 章节加载完成后，自动滚动到选中的章节（仅 replace 模式时触发，避免 append/prepend 时反复滚动）
+  useEffect(() => {
+    if (lastDirectionRef.current !== 'replace') return;
+    if (activeChapterId && chapters.length > 0 && chapterListRef.current) {
+      // 使用 setTimeout 确保 DOM 已渲染完毕
+      setTimeout(() => {
+        if (!chapterListRef.current) return;
+        const el = chapterListRef.current.querySelector(`[data-chapter-id="${activeChapterId}"]`);
+        if (el) {
+          el.scrollIntoView({ block: 'center', behavior: 'auto' });
+        }
+      }, 50);
+    }
+  }, [chapters]);
+
+  // 搜索防抖：关键词变化后 400ms 触发后端搜索（仅有搜索词时才触发，清空时由 navigateToChapter 处理）
+  useEffect(() => {
+    // 关键词为空时不在此处加载，由其他逻辑（navigateToChapter/初始化）控制
+    if (!chapterKeyword.trim()) return;
+    const timer = setTimeout(() => {
+      loadChapters(1, chapterKeyword.trim());
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [chapterKeyword]);
 
   // ==================== WebSocket ====================
   useEffect(() => {
@@ -290,8 +421,16 @@ export default function ProjectDetail() {
 
 
   // ==================== 章节操作 ====================
-  const handleSelectChapter = (chapter: Chapter) => {
+  const handleSelectChapter = (chapter: ChapterBrief) => {
     setActiveChapterId(chapter.id);
+    // 更新 URL 参数 + localStorage，记忆选中的章节
+    setSearchParams({ chapter: String(chapter.id) }, { replace: true });
+    localStorage.setItem(`saybook_last_chapter_${id}`, String(chapter.id));
+    // 如果是搜索模式下选中，清空搜索词并跳转到该章节在正常列表中的位置
+    if (chapterKeyword.trim()) {
+      setChapterKeyword('');
+      navigateToChapter(chapter.id);
+    }
   };
 
   const handleCreateChapter = async () => {
@@ -307,7 +446,7 @@ export default function ProjectDetail() {
       setChapterModalOpen(false);
       chapterForm.resetFields();
       setEditingChapter(null);
-      loadChapters();
+      loadChapters(1, chapterKeyword);
     } catch {
       // 校验失败
     }
@@ -316,11 +455,16 @@ export default function ProjectDetail() {
   const handleDeleteChapter = async (chapterId: number) => {
     await chapterApi.delete(chapterId);
     message.success('已删除章节');
-    if (activeChapterId === chapterId) setActiveChapterId(null);
-    loadChapters();
+    if (activeChapterId === chapterId) {
+      setActiveChapterId(null);
+      // 删除章节时清除 URL 参数和 localStorage
+      setSearchParams({}, { replace: true });
+      localStorage.removeItem(`saybook_last_chapter_${id}`);
+    }
+    loadChapters(1, chapterKeyword);
   };
 
-  const openRenameChapter = (chapter: Chapter) => {
+  const openRenameChapter = (chapter: ChapterBrief) => {
     setEditingChapter(chapter);
     setChapterModalMode('rename');
     chapterForm.setFieldsValue({ title: chapter.title });
@@ -345,7 +489,7 @@ export default function ProjectDetail() {
         const res = await projectApi.importChapters(projectId, { id: projectId, content: text });
         if (res.code === 200) {
           message.success('批量导入成功');
-          loadChapters();
+          loadChapters(1, chapterKeyword);
         } else {
           message.error(res.message || '导入失败');
         }
@@ -681,6 +825,7 @@ export default function ProjectDetail() {
     setMergeDurationMinutes(30);
     setMergeResults(null);
     setMergeModalOpen(true);
+    loadAllChapters(); // 加载全量轻量章节列表
   };
 
   const handleMergeExport = async () => {
@@ -713,7 +858,7 @@ export default function ProjectDetail() {
 
   const handleMergeSelectAll = (checked: boolean) => {
     if (checked) {
-      setMergeSelectedChapters(chapters.map(c => c.id));
+      setMergeSelectedChapters(allChapters.map(c => c.id));
     } else {
       setMergeSelectedChapters([]);
     }
@@ -722,8 +867,8 @@ export default function ProjectDetail() {
   const handleMergeChapterToggle = (chapterId: number, checked: boolean) => {
     if (checked) {
       setMergeSelectedChapters(prev => [...prev, chapterId].sort((a, b) => {
-        const idxA = chapters.findIndex(c => c.id === a);
-        const idxB = chapters.findIndex(c => c.id === b);
+        const idxA = allChapters.findIndex(c => c.id === a);
+        const idxB = allChapters.findIndex(c => c.id === b);
         return idxA - idxB;
       }));
     } else {
@@ -873,8 +1018,9 @@ export default function ProjectDetail() {
       {/* ==================== 左侧章节面板 ==================== */}
       <Sider
         width={260}
-        style={{ background: '#1e1e2e', borderRight: '1px solid #313244', borderRadius: 8, marginRight: 16, display: 'flex', flexDirection: 'column' }}
+        style={{ background: '#1e1e2e', borderRight: '1px solid #313244', borderRadius: 8, marginRight: 16, overflow: 'hidden' }}
       >
+        <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
         {/* 顶部：返回 + 项目名 */}
         <div style={{ padding: '12px 16px', borderBottom: '1px solid #313244' }}>
           <Space>
@@ -882,7 +1028,7 @@ export default function ProjectDetail() {
             <Text strong style={{ color: '#cdd6f4', fontSize: 15 }}>{project?.name || '项目'}</Text>
           </Space>
           <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <Tag>章节 {chapters.length}</Tag>
+            <Tag>章节 {chapterTotal}</Tag>
             <Tag>角色 {roles.length}</Tag>
             <Tag>台词 {lines.length}</Tag>
             {queueRestSize > 0 && <Tag color="red">队列 {queueRestSize}</Tag>}
@@ -919,18 +1065,66 @@ export default function ProjectDetail() {
           <Input
             size="small"
             prefix={<SearchOutlined />}
-            placeholder="搜索章节"
+            placeholder="搜索章节名（双击选中后自动跳转）"
             allowClear
             value={chapterKeyword}
-            onChange={(e) => setChapterKeyword(e.target.value)}
+            onChange={(e) => {
+              const kw = e.target.value;
+              setChapterKeyword(kw);
+              // 清空搜索词时，跳回到当前选中章节的位置
+              if (!kw.trim() && activeChapterId) {
+                navigateToChapter(activeChapterId);
+              }
+            }}
+            onPressEnter={() => {
+              // 按回车立即搜索
+              if (chapterKeyword.trim()) {
+                loadChapters(1, chapterKeyword.trim());
+              }
+            }}
+            suffix={chapterKeyword.trim() ? (
+              <Text style={{ fontSize: 11, color: '#6c7086' }}>
+                {chapters.length}/{chapterTotal}
+              </Text>
+            ) : (
+              <Text style={{ fontSize: 11, color: '#6c7086' }}>
+                {chapterTotal}
+              </Text>
+            )}
           />
         </div>
 
         {/* 章节列表 */}
-        <div style={{ flex: 1, overflow: 'auto', padding: '0 8px 8px' }}>
-          {filteredChapters.map((ch) => (
+        <div
+          ref={chapterListRef}
+          style={{ flex: 1, overflow: 'auto', padding: '0 8px 8px' }}
+          onScroll={(e) => {
+            // 如果正在进行跳转（navigateToChapter / scrollIntoView），不触发任何加载
+            if (scrollLockRef.current) return;
+            const target = e.currentTarget;
+            // 向下滚动到底部附近时加载更多
+            if (target.scrollHeight - target.scrollTop - target.clientHeight < 100 && chapterHasMore && !chapterLoading) {
+              const nextPage = Math.floor((chapterOffsetStart + chapters.length) / CHAPTER_PAGE_SIZE) + 1;
+              loadChapters(nextPage, chapterKeyword.trim(), 'append');
+            }
+            // 向上滚动到顶部附近时加载前面的数据
+            if (target.scrollTop < 100 && chapterHasLess && !chapterLoading) {
+              const prevPage = Math.floor(chapterOffsetStart / CHAPTER_PAGE_SIZE);
+              if (prevPage >= 1) {
+                loadChapters(prevPage, chapterKeyword.trim(), 'prepend');
+              }
+            }
+          }}
+        >
+          {chapterHasLess && !chapterLoading && (
+            <div style={{ textAlign: 'center', padding: 8, color: '#6c7086' }}>
+              <Text style={{ fontSize: 11, color: '#585b70' }}>↑ 向上滚动加载更多</Text>
+            </div>
+          )}
+          {chapters.map((ch) => (
             <Card
               key={ch.id}
+              data-chapter-id={ch.id}
               size="small"
               hoverable
               style={{
@@ -960,11 +1154,22 @@ export default function ProjectDetail() {
               </div>
             </Card>
           ))}
-          {filteredChapters.length === 0 && (
+          {chapterLoading && (
+            <div style={{ textAlign: 'center', padding: 12, color: '#6c7086' }}>
+              <Text type="secondary">加载中...</Text>
+            </div>
+          )}
+          {!chapterLoading && chapters.length === 0 && (
             <div style={{ textAlign: 'center', padding: 20, color: '#6c7086' }}>
               <Text type="secondary">暂无章节</Text>
             </div>
           )}
+          {!chapterLoading && !chapterHasMore && chapters.length > 0 && chapterKeyword.trim() && (
+            <div style={{ textAlign: 'center', padding: 8, color: '#6c7086' }}>
+              <Text style={{ fontSize: 11, color: '#585b70' }}>搜索到 {chapterTotal} 个结果</Text>
+            </div>
+          )}
+        </div>
         </div>
       </Sider>
 
@@ -1023,7 +1228,7 @@ export default function ProjectDetail() {
                     size="small"
                     icon={<RobotOutlined />}
                     style={{ background: '#6366f1', color: '#fff', borderColor: '#6366f1' }}
-                    onClick={() => setBatchLLMModalOpen(true)}
+                    onClick={() => { loadAllChapters(); setBatchLLMModalOpen(true); }}
                   >
                     批量LLM
                   </Button>
@@ -1031,7 +1236,7 @@ export default function ProjectDetail() {
                     size="small"
                     icon={<SoundOutlined />}
                     style={{ background: '#52c41a', color: '#fff', borderColor: '#52c41a' }}
-                    onClick={() => setBatchTTSModalOpen(true)}
+                    onClick={() => { loadAllChapters(); setBatchTTSModalOpen(true); }}
                   >
                     批量配音
                   </Button>
@@ -1389,9 +1594,9 @@ export default function ProjectDetail() {
         open={batchLLMModalOpen}
         onClose={() => setBatchLLMModalOpen(false)}
         projectId={projectId}
-        chapters={chapters}
+        chapters={allChapters}
         onComplete={() => {
-          loadChapters();
+          loadChapters(1, chapterKeyword);
           loadLines();
           loadRoles();
         }}
@@ -1402,7 +1607,7 @@ export default function ProjectDetail() {
         open={batchTTSModalOpen}
         onClose={() => setBatchTTSModalOpen(false)}
         projectId={projectId}
-        chapters={chapters}
+        chapters={allChapters}
         onComplete={() => {
           loadLines();
         }}
@@ -1464,15 +1669,15 @@ export default function ProjectDetail() {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                 <Typography.Text strong>选择章节：</Typography.Text>
                 <Checkbox
-                  checked={mergeSelectedChapters.length === chapters.length && chapters.length > 0}
-                  indeterminate={mergeSelectedChapters.length > 0 && mergeSelectedChapters.length < chapters.length}
+                  checked={mergeSelectedChapters.length === allChapters.length && allChapters.length > 0}
+                  indeterminate={mergeSelectedChapters.length > 0 && mergeSelectedChapters.length < allChapters.length}
                   onChange={(e) => handleMergeSelectAll(e.target.checked)}
                 >
                   全选
                 </Checkbox>
               </div>
               <div style={{ maxHeight: 240, overflowY: 'auto', border: '1px solid #d9d9d9', borderRadius: 6, padding: 8 }}>
-                {chapters.map((ch) => (
+                {allChapters.map((ch) => (
                   <div key={ch.id} style={{ padding: '4px 0' }}>
                     <Checkbox
                       checked={mergeSelectedChapters.includes(ch.id)}
@@ -1482,10 +1687,10 @@ export default function ProjectDetail() {
                     </Checkbox>
                   </div>
                 ))}
-                {chapters.length === 0 && <Empty description="暂无章节" image={Empty.PRESENTED_IMAGE_SIMPLE} />}
+                {allChapters.length === 0 && <Empty description="暂无章节" image={Empty.PRESENTED_IMAGE_SIMPLE} />}
               </div>
               <Typography.Text type="secondary" style={{ fontSize: 12, marginTop: 4, display: 'block' }}>
-                已选 {mergeSelectedChapters.length} / {chapters.length} 章
+                已选 {mergeSelectedChapters.length} / {allChapters.length} 章
               </Typography.Text>
             </div>
 
@@ -1564,17 +1769,22 @@ export default function ProjectDetail() {
               }}
             />
           </Form.Item>
-          <Form.Item name="llm_model" label="LLM 模型" dependencies={['llm_provider_id']}>
-            {(() => {
+          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.llm_provider_id !== cur.llm_provider_id}>
+            {() => {
               const selectedProviderId = settingsForm.getFieldValue('llm_provider_id');
               const provider = llmProviders.find((p) => p.id === selectedProviderId);
               const models = provider?.model_list ? String(provider.model_list).split(',').map((m) => m.trim()).filter(Boolean) : [];
-              return models.length > 0 ? (
-                <Select allowClear placeholder="请选择模型" options={models.map((m) => ({ value: m, label: m }))} />
-              ) : (
-                <Input placeholder="请先配置 LLM 提供商的模型列表" />
+              return (
+                <Form.Item name="llm_model" label="LLM 模型">
+                  <Select
+                    allowClear
+                    placeholder={models.length > 0 ? '请选择模型' : '请先配置 LLM 提供商的模型列表'}
+                    options={models.map((m) => ({ value: m, label: m }))}
+                    disabled={models.length === 0}
+                  />
+                </Form.Item>
               );
-            })()}
+            }}
           </Form.Item>
           <Form.Item name="tts_provider_id" label="TTS 引擎">
             <Select allowClear options={ttsProviders.map((p) => ({ value: p.id, label: p.name }))} />

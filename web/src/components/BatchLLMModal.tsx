@@ -3,7 +3,7 @@ import { Checkbox, InputNumber, Modal, Progress, Space, Tag, Typography, message
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { batchApi } from '../api';
 import { useWebSocket } from '../hooks/useWebSocket';
-import type { Chapter, WSEvent } from '../types';
+import type { ChapterBrief, WSEvent } from '../types';
 import LogPanel from './LogPanel';
 
 const { Text } = Typography;
@@ -12,7 +12,7 @@ interface BatchLLMModalProps {
   open: boolean;
   onClose: () => void;
   projectId: number;
-  chapters: Chapter[];
+  chapters: ChapterBrief[];
   onComplete?: () => void;
 }
 
@@ -35,7 +35,7 @@ export default function BatchLLMModal({ open, onClose, projectId, chapters, onCo
   // 初始化选中所有有内容的章节
   useEffect(() => {
     if (open) {
-      const validIds = chapters.filter((c) => c.text_content && c.text_content.trim()).map((c) => c.id);
+      const validIds = chapters.filter((c) => c.has_content).map((c) => c.id);
       setSelectedIds(validIds);
       setLogs([]);
       setProgress(0);
@@ -128,7 +128,7 @@ export default function BatchLLMModal({ open, onClose, projectId, chapters, onCo
   }, [open, sortedChapters.length]);
 
   const handleSelectAll = () => {
-    const validIds = sortedChapters.filter((c) => c.text_content && c.text_content.trim()).map((c) => c.id);
+    const validIds = sortedChapters.filter((c) => c.has_content).map((c) => c.id);
     setSelectedIds(validIds);
   };
 
@@ -146,7 +146,7 @@ export default function BatchLLMModal({ open, onClose, projectId, chapters, onCo
     }
     const rangeChapters = sortedChapters.slice(start - 1, end);
     const validIds = rangeChapters
-      .filter((c) => c.text_content && c.text_content.trim())
+      .filter((c) => c.has_content)
       .map((c) => c.id);
     setSelectedIds(validIds);
     message.success(`已选中第 ${start} ~ ${end} 章中有内容的 ${validIds.length} 个章节`);
@@ -290,7 +290,7 @@ export default function BatchLLMModal({ open, onClose, projectId, chapters, onCo
                 <Checkbox value={ch.id} disabled={running}>
                   <span style={{ color: '#585b70', fontSize: 11, marginRight: 4 }}>#{idx + 1}</span>
                   <span style={{ color: '#cdd6f4' }}>{ch.title}</span>
-                  {!ch.text_content?.trim() && (
+                  {!ch.has_content && (
                     <Tag color="warning" style={{ marginLeft: 8, fontSize: 10 }}>无内容</Tag>
                   )}
                 </Checkbox>
