@@ -3,6 +3,7 @@ import { Checkbox, InputNumber, Modal, Progress, Space, Tag, Typography, message
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { batchApi, chapterApi } from '../api';
 import { useChapterLazyList } from '../hooks/useChapterLazyList';
+import { usePersistedConfig } from '../hooks/usePersistedState';
 import { useWebSocket } from '../hooks/useWebSocket';
 import type { WSEvent } from '../types';
 import LogPanel from './LogPanel';
@@ -34,8 +35,15 @@ export default function BatchLLMModal({ open, onClose, projectId, onComplete, on
   const [current, setCurrent] = useState(0);
   const [total, setTotal] = useState(0);
   const [chapterStatuses, setChapterStatuses] = useState<Map<number, ChapterStatus>>(new Map());
-  const [concurrency, setConcurrency] = useState(1);
-  const [skipParsed, setSkipParsed] = useState(true);
+  // 使用持久化配置（并发数、是否跳过已解析）
+  const [persistedConfig, updateConfig] = usePersistedConfig(
+    `saybook_batchllm_${projectId}`,
+    { concurrency: 1, skipParsed: true, rangeStart: 1, rangeEnd: 0 }
+  );
+  const concurrency = persistedConfig.concurrency;
+  const skipParsed = persistedConfig.skipParsed;
+  const setConcurrency = (v: number) => updateConfig('concurrency', v);
+  const setSkipParsed = (v: boolean) => updateConfig('skipParsed', v);
   // 标记是否已经初始化过（防止重复重置正在运行的任务状态）
   const hasInitRef = useRef(false);
 
@@ -201,17 +209,18 @@ export default function BatchLLMModal({ open, onClose, projectId, onComplete, on
     }
   }, [projectId]);
 
-  // 范围选择
-  const [rangeStart, setRangeStart] = useState<number>(1);
-  const [rangeEnd, setRangeEnd] = useState<number>(1);
+  // 范围选择（从持久化配置中读取，仅首次无保存时才设默认）
+  const rangeStart = persistedConfig.rangeStart;
+  const rangeEnd = persistedConfig.rangeEnd || lazyList.total || 1;
+  const setRangeStart = (v: number) => updateConfig('rangeStart', v);
+  const setRangeEnd = (v: number) => updateConfig('rangeEnd', v);
 
-  // 初始化范围
+  // 仅当持久化中没有保存过范围（rangeEnd 为 0）时，设置默认值
   useEffect(() => {
-    if (open && lazyList.total > 0) {
-      setRangeStart(1);
-      setRangeEnd(lazyList.total);
+    if (open && lazyList.total > 0 && persistedConfig.rangeEnd === 0) {
+      updateConfig('rangeEnd', lazyList.total);
     }
-  }, [open, lazyList.total]);
+  }, [open, lazyList.total]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSelectAll = () => {
     // 全选：选中当前已加载列表中有内容的章节

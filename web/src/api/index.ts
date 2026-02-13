@@ -1,5 +1,5 @@
 import type { AutopilotRequest, AutopilotStatus, BatchLLMRequest, BatchTTSRequest, Chapter, ChapterBrief, ChapterPageResponse, Emotion, Line, LLMProvider, Project, Prompt, Res, Role, RoleWithLineCount, Strength, TTSProvider, Voice, VoiceDebugRequest } from '../types';
-import api from './client';
+import api, { API_BASE } from './client';
 
 // ============================================================
 // 项目
@@ -80,9 +80,13 @@ export const roleApi = {
 export const voiceApi = {
   getAll: (ttsProviderId?: number) => api.get<unknown, Res<Voice[]>>('/voices', { params: { tts_provider_id: ttsProviderId } }),
   get: (id: number) => api.get<unknown, Res<Voice>>(`/voices/${id}`),
-  create: (data: FormData) => api.post<unknown, Res<Voice>>('/voices', data, { headers: { 'Content-Type': 'multipart/form-data' } }),
+  create: (data: Partial<Voice>) => api.post<unknown, Res<Voice>>('/voices', data),
   update: (id: number, data: Partial<Voice>) => api.put<unknown, Res>(`/voices/${id}`, data),
   delete: (id: number) => api.delete<unknown, Res>(`/voices/${id}`),
+  /** 上传音色（含参考音频文件） */
+  upload: (data: FormData) => api.post<unknown, Res<Voice>>('/voices/upload', data, { headers: { 'Content-Type': 'multipart/form-data' } }),
+  /** 获取音频文件URL */
+  getAudioUrl: (path: string) => `${API_BASE}/voices/audio-file?path=${encodeURIComponent(path)}`,
 };
 
 // ============================================================

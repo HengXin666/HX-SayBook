@@ -172,6 +172,68 @@ class ChapterService:
 
     # 然后进行划分
 
+    @staticmethod
+    def _find_invalid_emotions(
+        parsed_data: list, emotion_set: set, strength_set: set
+    ) -> list:
+        """
+        校验 LLM 返回的 parsed_data 中的 emotion_name 和 strength_name 是否合法。
+        返回不合法的条目列表 [{"index": i, "text_content": ..., "emotion_name": ..., "strength_name": ...}, ...]
+        """
+        invalid_items = []
+        for i, item in enumerate(parsed_data):
+            emo = item.get("emotion_name", "")
+            stg = item.get("strength_name", "")
+            role = item.get("role_name", "")
+            # 旁白统一为平静/中等，不需要校验
+            if role == "旁白":
+                continue
+            if emo not in emotion_set or stg not in strength_set:
+                invalid_items.append(
+                    {
+                        "index": i,
+                        "text_content": item.get("text_content", "")[:80],
+                        "role_name": role,
+                        "emotion_name": emo,
+                        "strength_name": stg,
+                    }
+                )
+        return invalid_items
+
+    @staticmethod
+    def _build_emotion_fix_prompt(
+        invalid_items: list, emotion_names: list, strength_names: list
+    ) -> str:
+        """
+        构造情绪修正的重试 prompt，让 LLM 仅重新选择合法的情绪和强度。
+        返回 prompt 字符串。
+        """
+        items_desc = ""
+        for item in invalid_items:
+            items_desc += (
+                f'  - 序号 {item["index"]}, 角色: {item["role_name"]}, '
+                f'台词片段: "{item["text_content"]}", '
+                f'当前情绪: "{item["emotion_name"]}", 当前强度: "{item["strength_name"]}"\n'
+            )
+
+        prompt = f"""你之前的输出中，以下台词的情绪或强度不在合法列表中，请重新为它们选择正确的情绪和强度。
+
+不合法的条目：
+{items_desc}
+合法的情绪列表（只能从中选择）：
+【{', '.join(emotion_names)}】
+
+合法的强度列表（只能从中选择）：
+【{', '.join(strength_names)}】
+
+请严格输出 JSON 数组，每个元素包含 index、emotion_name、strength_name 三个字段。
+不要输出其他任何内容。
+
+示例输出：
+[{{{"index": 0, "emotion_name": "平静", "strength_name": "中等"}}}, {{{"index": 3, "emotion_name": "高兴", "strength_name": "较强"}}}]
+"""
+        return prompt
+
     # 然后循环解析，并保存
     def fill_prompt(
         self,
@@ -255,6 +317,56 @@ class ChapterService:
 
                 # parsed_data = json.loads(result)
                 # 构造 List[LineInitDTO]
+                # ---- 情绪校验 + 重试修正 ----
+                emotion_set = set(emotion_names) if emotion_names else set()
+                strength_set = set(strength_names) if strength_names else set()
+                if emotion_set and strength_set:
+                    invalid_items = self._find_invalid_emotions(
+                        parsed_data, emotion_set, strength_set
+                    )
+                    if invalid_items:
+                        print(f"发现 {len(invalid_items)} 条情绪不合法，尝试修正...")
+                        fix_prompt = self._build_emotion_fix_prompt(
+                            invalid_items, emotion_names, strength_names
+                        )
+                        try:
+                            fix_result = llm.generate_text(fix_prompt)
+                            fix_data = llm.save_load_json(fix_result)
+                            if fix_data:
+                                for fix_item in fix_data:
+                                    idx = fix_item.get("index")
+                                    new_emo = fix_item.get("emotion_name", "")
+                                    new_stg = fix_item.get("strength_name", "")
+                                    if idx is not None and 0 <= idx < len(parsed_data):
+                                        if new_emo in emotion_set:
+                                            parsed_data[idx]["emotion_name"] = new_emo
+                                        else:
+                                            parsed_data[idx]["emotion_name"] = "平静"
+                                        if new_stg in strength_set:
+                                            parsed_data[idx]["strength_name"] = new_stg
+                                        else:
+                                            parsed_data[idx]["strength_name"] = "中等"
+                                print(f"情绪修正完成，修正了 {len(fix_data)} 条")
+                            else:
+                                # 修正失败，将不合法的情绪 fallback 为平静
+                                for item in invalid_items:
+                                    idx = item["index"]
+                                    if item["emotion_name"] not in emotion_set:
+                                        parsed_data[idx]["emotion_name"] = "平静"
+                                    if item["strength_name"] not in strength_set:
+                                        parsed_data[idx]["strength_name"] = "中等"
+                                print("情绪修正LLM返回为空，已fallback为平静")
+                        except Exception as fix_e:
+                            print(
+                                f"情绪修正重试失败: {fix_e}，将不合法情绪fallback为平静"
+                            )
+                            for item in invalid_items:
+                                idx = item["index"]
+                                if item["emotion_name"] not in emotion_set:
+                                    parsed_data[idx]["emotion_name"] = "平静"
+                                if item["strength_name"] not in strength_set:
+                                    parsed_data[idx]["strength_name"] = "中等"
+
                 line_dtos: List[LineInitDTO] = [
                     LineInitDTO(**item) for item in parsed_data
                 ]
@@ -390,6 +502,57 @@ class ChapterService:
                     print("开始自动填充")
                     corrector = TextCorrectorFinal()
                     parsed_data = corrector.correct_ai_text(content, parsed_data)
+
+                # ---- 情绪校验 + 重试修正（异步版） ----
+                emotion_set = set(emotion_names) if emotion_names else set()
+                strength_set = set(strength_names) if strength_names else set()
+                if emotion_set and strength_set:
+                    invalid_items = self._find_invalid_emotions(
+                        parsed_data, emotion_set, strength_set
+                    )
+                    if invalid_items:
+                        print(
+                            f"发现 {len(invalid_items)} 条情绪不合法，尝试异步修正..."
+                        )
+                        fix_prompt = self._build_emotion_fix_prompt(
+                            invalid_items, emotion_names, strength_names
+                        )
+                        try:
+                            fix_result = await llm.generate_text_async(fix_prompt)
+                            fix_data = await llm.save_load_json_async(fix_result)
+                            if fix_data:
+                                for fix_item in fix_data:
+                                    idx = fix_item.get("index")
+                                    new_emo = fix_item.get("emotion_name", "")
+                                    new_stg = fix_item.get("strength_name", "")
+                                    if idx is not None and 0 <= idx < len(parsed_data):
+                                        if new_emo in emotion_set:
+                                            parsed_data[idx]["emotion_name"] = new_emo
+                                        else:
+                                            parsed_data[idx]["emotion_name"] = "平静"
+                                        if new_stg in strength_set:
+                                            parsed_data[idx]["strength_name"] = new_stg
+                                        else:
+                                            parsed_data[idx]["strength_name"] = "中等"
+                                print(f"情绪修正完成，修正了 {len(fix_data)} 条")
+                            else:
+                                for item in invalid_items:
+                                    idx = item["index"]
+                                    if item["emotion_name"] not in emotion_set:
+                                        parsed_data[idx]["emotion_name"] = "平静"
+                                    if item["strength_name"] not in strength_set:
+                                        parsed_data[idx]["strength_name"] = "中等"
+                                print("情绪修正LLM返回为空，已fallback为平静")
+                        except Exception as fix_e:
+                            print(
+                                f"情绪修正重试失败: {fix_e}，将不合法情绪fallback为平静"
+                            )
+                            for item in invalid_items:
+                                idx = item["index"]
+                                if item["emotion_name"] not in emotion_set:
+                                    parsed_data[idx]["emotion_name"] = "平静"
+                                if item["strength_name"] not in strength_set:
+                                    parsed_data[idx]["strength_name"] = "中等"
 
                 line_dtos: List[LineInitDTO] = [
                     LineInitDTO(**item) for item in parsed_data

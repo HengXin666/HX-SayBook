@@ -43,6 +43,32 @@ html, body, #root {
   transition: all 0.2s ease;
 }
 
+/* 让 Tabs 内容区域能正确传递 flex 高度，使角色库等 Tab 可滚动 */
+.ant-tabs {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.ant-tabs-content-holder {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.ant-tabs-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.ant-tabs-tabpane-active {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .logo-title {
   display: flex;
   align-items: center;

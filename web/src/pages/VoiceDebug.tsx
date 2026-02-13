@@ -1,6 +1,6 @@
 import { ClearOutlined, CompressOutlined, DeleteOutlined, ExpandOutlined, PlayCircleOutlined, SoundOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { Button, Card, Collapse, Form, Input, List, Select, Slider, Space, Tabs, Tag, Tooltip, Typography, message } from 'antd';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { batchApi } from '../api';
 import { API_BASE } from '../api/client';
 import { useAppStore } from '../store';
@@ -37,21 +37,66 @@ interface CompareGroup {
   timestamp: string;
 }
 
+// === localStorage 持久化 key ===
+const LS_KEY_RESULTS = 'voice_debug_results';
+const LS_KEY_COMPARE = 'voice_debug_compare';
+const LS_MAX_RESULTS = 50;  // 最多保存 50 条单次调试记录
+const LS_MAX_COMPARE = 20;  // 最多保存 20 组对比记录
+
+/** 安全读取 localStorage JSON */
+function loadFromStorage<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+/** 写入 localStorage */
+function saveToStorage<T>(key: string, data: T): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(data));
+  } catch {
+    // localStorage 满了则忽略
+  }
+}
+
+/** 从 localStorage 恢复最大 id (用于 useRef 初始化) */
+function initMaxId(key: string): number {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return 0;
+    const arr = JSON.parse(raw) as Array<{ id: number; results?: Array<{ id: number }> }>;
+    if (!Array.isArray(arr) || arr.length === 0) return 0;
+    // 对比组需要检查嵌套的 results 中的 id
+    const ids = arr.flatMap(item => {
+      const nested = item.results?.map(r => r.id) ?? [];
+      return [item.id, ...nested];
+    });
+    return Math.max(...ids);
+  } catch {
+    return 0;
+  }
+}
+
 export default function VoiceDebug() {
   const { voices, emotions, strengths, ttsProviders, fetchVoices, fetchEmotions, fetchStrengths, fetchTTSProviders } = useAppStore();
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
-  const [results, setResults] = useState<DebugResult[]>([]);
+  // 从 localStorage 恢复历史记录
+  const [results, setResults] = useState<DebugResult[]>(() => loadFromStorage(LS_KEY_RESULTS, []));
   const [previewSpeed, setPreviewSpeed] = useState(1.0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const resultIdRef = useRef(0);
+  const resultIdRef = useRef<number>(initMaxId(LS_KEY_RESULTS));
 
   // 批量对比模式
   const [compareMode, setCompareMode] = useState(false);
-  const [compareGroups, setCompareGroups] = useState<CompareGroup[]>([]);
+  const [compareGroups, setCompareGroups] = useState<CompareGroup[]>(() => loadFromStorage(LS_KEY_COMPARE, []));
   const [compareLoading, setCompareLoading] = useState(false);
   const [compareForm] = Form.useForm();
-  const compareGroupIdRef = useRef(0);
+  const compareGroupIdRef = useRef<number>(initMaxId(LS_KEY_COMPARE));
 
   // 当前播放
   const [playingId, setPlayingId] = useState<number | null>(null);
@@ -62,6 +107,16 @@ export default function VoiceDebug() {
     fetchStrengths();
     fetchTTSProviders();
   }, []);
+
+  // 同步 results → localStorage
+  useEffect(() => {
+    saveToStorage(LS_KEY_RESULTS, results.slice(0, LS_MAX_RESULTS));
+  }, [results]);
+
+  // 同步 compareGroups → localStorage
+  useEffect(() => {
+    saveToStorage(LS_KEY_COMPARE, compareGroups.slice(0, LS_MAX_COMPARE));
+  }, [compareGroups]);
 
   // 监听音频播放结束
   useEffect(() => {
@@ -193,13 +248,25 @@ export default function VoiceDebug() {
     }
   };
 
-  const handleDeleteResult = (id: number) => {
+  const handleDeleteResult = useCallback((id: number) => {
     setResults((prev) => prev.filter((r) => r.id !== id));
-  };
+  }, []);
 
-  const handleDeleteCompareGroup = (id: number) => {
+  const handleDeleteCompareGroup = useCallback((id: number) => {
     setCompareGroups((prev) => prev.filter((g) => g.id !== id));
-  };
+  }, []);
+
+  /** 清空单次调试历史 */
+  const handleClearResults = useCallback(() => {
+    setResults([]);
+    localStorage.removeItem(LS_KEY_RESULTS);
+  }, []);
+
+  /** 清空对比历史 */
+  const handleClearCompare = useCallback(() => {
+    setCompareGroups([]);
+    localStorage.removeItem(LS_KEY_COMPARE);
+  }, []);
 
   const handleUseSampleText = (text: string) => {
     form.setFieldValue('text', text);
@@ -298,7 +365,7 @@ export default function VoiceDebug() {
                 {/* 右侧：历史结果 */}
                 <Card style={{ flex: 1, background: '#1e1e2e', borderColor: '#313244', maxHeight: 700, overflow: 'auto' }}
                   title={`📜 调试历史 (${results.length})`}
-                  extra={results.length > 0 ? <Button type="text" size="small" icon={<ClearOutlined />} onClick={() => setResults([])}>清空</Button> : null}
+                  extra={results.length > 0 ? <Button type="text" size="small" icon={<ClearOutlined />} onClick={handleClearResults}>清空</Button> : null}
                 >
                   {results.length === 0 ? (
                     <div style={{ textAlign: 'center', padding: 40, color: '#6c7086' }}>
@@ -420,7 +487,7 @@ export default function VoiceDebug() {
                 {/* 右侧：对比结果 */}
                 <Card style={{ flex: 1, background: '#1e1e2e', borderColor: '#313244', maxHeight: 700, overflow: 'auto' }}
                   title={`📊 对比结果 (${compareGroups.length} 组)`}
-                  extra={compareGroups.length > 0 ? <Button type="text" size="small" icon={<ClearOutlined />} onClick={() => setCompareGroups([])}>清空</Button> : null}
+                  extra={compareGroups.length > 0 ? <Button type="text" size="small" icon={<ClearOutlined />} onClick={handleClearCompare}>清空</Button> : null}
                 >
                   {compareGroups.length === 0 ? (
                     <div style={{ textAlign: 'center', padding: 40, color: '#6c7086' }}>

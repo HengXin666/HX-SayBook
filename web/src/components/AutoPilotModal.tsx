@@ -3,6 +3,7 @@ import { Alert, Badge, Checkbox, InputNumber, Modal, Progress, Slider, Space, Sw
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { batchApi, chapterApi, roleApi } from '../api';
 import { useChapterLazyList } from '../hooks/useChapterLazyList';
+import { usePersistedConfig } from '../hooks/usePersistedState';
 import { useWebSocket } from '../hooks/useWebSocket';
 import type { Role, WSEvent } from '../types';
 import LogPanel from './LogPanel';
@@ -39,11 +40,19 @@ export default function AutoPilotModal({ open, onClose, projectId, onComplete, o
   const [total, setTotal] = useState(0);
   const [chapterStatuses, setChapterStatuses] = useState<Map<number, ChapterStatus>>(new Map());
 
-  // 配置参数
-  const [concurrency, setConcurrency] = useState(1);
-  const [speed, setSpeed] = useState(1.0);
-  const [voiceMatchInterval, setVoiceMatchInterval] = useState(10);
-  const [manualVoiceAssign, setManualVoiceAssign] = useState(false);
+  // 使用持久化配置（并发数、语速、音色匹配间隔、手动分配、范围）
+  const [persistedConfig, updateConfig] = usePersistedConfig(
+    `saybook_autopilot_${projectId}`,
+    { concurrency: 1, speed: 1.0, voiceMatchInterval: 10, manualVoiceAssign: false, rangeStart: 1, rangeEnd: 0 }
+  );
+  const concurrency = persistedConfig.concurrency;
+  const speed = persistedConfig.speed;
+  const voiceMatchInterval = persistedConfig.voiceMatchInterval;
+  const manualVoiceAssign = persistedConfig.manualVoiceAssign;
+  const setConcurrency = (v: number) => updateConfig('concurrency', v);
+  const setSpeed = (v: number) => updateConfig('speed', v);
+  const setVoiceMatchInterval = (v: number) => updateConfig('voiceMatchInterval', v);
+  const setManualVoiceAssign = (v: boolean) => updateConfig('manualVoiceAssign', v);
 
   // 音色分配暂停界面
   const [unboundRoles, setUnboundRoles] = useState<string[]>([]);
@@ -345,17 +354,19 @@ export default function AutoPilotModal({ open, onClose, projectId, onComplete, o
     }
   }, [projectId]);
 
-  // 范围选择
-  const [rangeStart, setRangeStart] = useState(1);
-  const [rangeEnd, setRangeEnd] = useState(1);
+  // 范围选择（从持久化配置中读取）
+  const rangeStart = persistedConfig.rangeStart;
+  const rangeEnd = persistedConfig.rangeEnd || lazyList.total || 1;
+  const setRangeStart = (v: number) => updateConfig('rangeStart', v);
+  const setRangeEnd = (v: number) => updateConfig('rangeEnd', v);
   const [rangeLoading, setRangeLoading] = useState(false);
 
+  // 仅当持久化中没有保存过范围（rangeEnd 为 0）时，设置默认值
   useEffect(() => {
-    if (open && lazyList.total > 0) {
-      setRangeStart(1);
-      setRangeEnd(lazyList.total);
+    if (open && lazyList.total > 0 && persistedConfig.rangeEnd === 0) {
+      updateConfig('rangeEnd', lazyList.total);
     }
-  }, [open, lazyList.total]);
+  }, [open, lazyList.total]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSelectRange = useCallback(async () => {
     const start = Math.max(1, rangeStart);
