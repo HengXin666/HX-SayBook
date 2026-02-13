@@ -958,12 +958,15 @@ export default function ProjectDetail() {
       key: 'emotion_id',
       width: 110,
       render: (emotionId: number | null, record: Line) => {
-        // 构建 options：确保当前已选值始终存在于列表中（即使 emotions 尚未加载）
-        const emotionOptions = emotions.length > 0
-          ? emotions.map((e) => ({ value: e.id, label: e.name }))
-          : emotionId
-            ? [{ value: emotionId, label: emotionMap.get(emotionId) || `情绪#${emotionId}` }]
-            : [];
+        // 构建 options：始终基于 emotions 列表，并确保当前已选值一定存在
+        const baseOptions = emotions.map((e) => ({ value: e.id, label: e.name }));
+        // 如果当前行有 emotionId 但不在列表中，补充一个选项（避免显示数字）
+        if (emotionId && !baseOptions.some(o => o.value === emotionId)) {
+          const name = emotionMap.get(emotionId);
+          if (name) {
+            baseOptions.unshift({ value: emotionId, label: name });
+          }
+        }
         return (
           <Select
             size="small"
@@ -973,9 +976,14 @@ export default function ProjectDetail() {
             allowClear
             showSearch
             optionFilterProp="label"
-            options={emotionOptions}
+            options={baseOptions}
             onChange={(val) => handleUpdateLineField(record.id, 'emotion_id', val ?? null)}
             notFoundContent="暂无情绪选项"
+            // 确保即使 options 中没匹配到也显示中文而非数字
+            labelRender={(props) => {
+              const matched = baseOptions.find(o => o.value === props.value);
+              return <span>{matched?.label ?? (emotionId ? (emotionMap.get(emotionId) || '未知情绪') : props.label)}</span>;
+            }}
           />
         );
       },
@@ -986,11 +994,15 @@ export default function ProjectDetail() {
       key: 'strength_id',
       width: 110,
       render: (strengthId: number | null, record: Line) => {
-        const strengthOptions = strengths.length > 0
-          ? strengths.map((s) => ({ value: s.id, label: s.name }))
-          : strengthId
-            ? [{ value: strengthId, label: strengthMap.get(strengthId) || `强度#${strengthId}` }]
-            : [];
+        // 构建 options：始终基于 strengths 列表，并确保当前已选值一定存在
+        const baseOptions = strengths.map((s) => ({ value: s.id, label: s.name }));
+        // 如果当前行有 strengthId 但不在列表中，补充一个选项（避免显示数字）
+        if (strengthId && !baseOptions.some(o => o.value === strengthId)) {
+          const name = strengthMap.get(strengthId);
+          if (name) {
+            baseOptions.unshift({ value: strengthId, label: name });
+          }
+        }
         return (
           <Select
             size="small"
@@ -1000,9 +1012,14 @@ export default function ProjectDetail() {
             allowClear
             showSearch
             optionFilterProp="label"
-            options={strengthOptions}
+            options={baseOptions}
             onChange={(val) => handleUpdateLineField(record.id, 'strength_id', val ?? null)}
             notFoundContent="暂无强度选项"
+            // 确保即使 options 中没匹配到也显示中文而非数字
+            labelRender={(props) => {
+              const matched = baseOptions.find(o => o.value === props.value);
+              return <span>{matched?.label ?? (strengthId ? (strengthMap.get(strengthId) || '未知强度') : props.label)}</span>;
+            }}
           />
         );
       },
