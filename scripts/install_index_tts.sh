@@ -439,7 +439,7 @@ main() {
     echo "📌 后续步骤:"
     echo ""
     echo "  1️⃣  启动 TTS API 服务:"
-    echo "     cd $INSTALL_DIR && ./start_tts_server.sh"
+    echo "     运行 ./run_index_tts.sh"
     echo ""
     echo "  2️⃣  服务默认运行在 http://127.0.0.1:8000"
     echo "     在 HX-SayBook 配置中心的 TTS 供应商中填入此地址即可"
