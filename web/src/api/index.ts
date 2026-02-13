@@ -22,6 +22,8 @@ export const chapterApi = {
     api.get<unknown, Res<ChapterPageResponse>>(`/chapters/project/${projectId}/page`, { params }),
   getPosition: (projectId: number, chapterId: number, pageSize = 50) =>
     api.get<unknown, Res<{ position: number; page: number }>>(`/chapters/project/${projectId}/position/${chapterId}`, { params: { page_size: pageSize } }),
+  getIdsByRange: (projectId: number, params: { start: number; end: number; has_content_only?: boolean }) =>
+    api.get<unknown, Res<number[]>>(`/chapters/project/${projectId}/ids-by-range`, { params }),
   get: (id: number) => api.get<unknown, Res<Chapter>>(`/chapters/${id}`),
   create: (data: Partial<Chapter>) => api.post<unknown, Res<Chapter>>('/chapters', data),
   update: (id: number, data: Partial<Chapter>) => api.put<unknown, Res<Chapter>>(`/chapters/${id}`, data),

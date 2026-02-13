@@ -219,6 +219,23 @@ async def get_chapter_position(
     )
 
 
+@router.get(
+    "/project/{project_id}/ids-by-range",
+    response_model=Res[List[int]],
+    summary="按范围获取章节ID列表",
+    description="按排序后的位置范围获取章节ID列表，start/end 均为 1-based",
+)
+async def get_ids_by_range(
+    project_id: int,
+    start: int = Query(1, ge=1, description="起始位置（1-based）"),
+    end: int = Query(1, ge=1, description="结束位置（1-based）"),
+    has_content_only: bool = Query(False, description="是否只返回有内容的章节"),
+    chapter_service: ChapterService = Depends(get_chapter_service),
+):
+    ids = chapter_service.get_ids_by_range(project_id, start, end, has_content_only)
+    return Res(data=ids, code=200, message="查询成功")
+
+
 # 修改，传入的参数是id
 @router.put(
     "/{chapter_id}",

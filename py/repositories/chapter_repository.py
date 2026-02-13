@@ -131,6 +131,23 @@ class ChapterRepository:
         stmt = select(func.count(ChapterPO.id)).where(*conditions)
         return self.db.execute(stmt).scalar() or 0
 
+    def get_ids_by_range(
+        self, project_id: int, start: int, end: int, has_content_only: bool = False
+    ) -> list[int]:
+        """按排序后的位置范围获取章节 ID 列表（start/end 均为 1-based）"""
+        base = select(ChapterPO.id).where(ChapterPO.project_id == project_id)
+        if has_content_only:
+            base = base.where(
+                and_(ChapterPO.text_content.isnot(None), ChapterPO.text_content != "")
+            )
+        stmt = (
+            base.order_by(ChapterPO.order_index.asc().nullslast(), ChapterPO.id.asc())
+            .offset(start - 1)
+            .limit(end - start + 1)
+        )
+        rows = self.db.execute(stmt).all()
+        return [row.id for row in rows]
+
     def create(self, chapter_data: ChapterPO) -> ChapterPO:
         """新建项目"""
         self.db.add(chapter_data)

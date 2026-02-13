@@ -47,6 +47,7 @@ import { chapterApi, emotionApi, lineApi, llmProviderApi, projectApi, promptApi,
 import BatchLLMModal from '../components/BatchLLMModal';
 import BatchTTSModal from '../components/BatchTTSModal';
 import SpeedControl from '../components/SpeedControl';
+import { useChapterLazyList } from '../hooks/useChapterLazyList';
 import { useWebSocket } from '../hooks/useWebSocket';
 import type { Chapter, ChapterBrief, Emotion, Line, LLMProvider, Project, Prompt, Role, Strength, TTSProvider, Voice, WSEvent } from '../types';
 
@@ -82,7 +83,6 @@ export default function ProjectDetail() {
   const [currentChapterDetail, setCurrentChapterDetail] = useState<Chapter | null>(null); // 选中章节的完整数据
   const [chapterKeyword, setChapterKeyword] = useState('');
   const [chapterCollapsed, setChapterCollapsed] = useState(true);
-  const [allChapters, setAllChapters] = useState<ChapterBrief[]>([]); // 全量轻量列表（合并/批量弹窗用）
 
   // ==================== 台词数据 ====================
   const [lines, setLines] = useState<Line[]>([]);
@@ -154,6 +154,10 @@ export default function ProjectDetail() {
   const [mergeDurationMinutes, setMergeDurationMinutes] = useState(30);
   const [mergeLoading, setMergeLoading] = useState(false);
   const [mergeResults, setMergeResults] = useState<{ name: string; url: string; chapters: string[]; duration?: string }[] | null>(null);
+  // 合并导出范围选择
+  const [mergeRangeStart, setMergeRangeStart] = useState<number>(1);
+  const [mergeRangeEnd, setMergeRangeEnd] = useState<number>(1);
+  const [mergeRangeLoading, setMergeRangeLoading] = useState(false);
 
 
   // ==================== 播放状态 ====================
@@ -283,12 +287,8 @@ export default function ProjectDetail() {
     setTimeout(() => { scrollLockRef.current = false; }, 800);
   }, [projectId, loadChapters]);
 
-  // 加载全量轻量章节列表（给批量/合并弹窗用）
-  const loadAllChapters = useCallback(async () => {
-    const res = await chapterApi.getByProject(projectId);
-    if (res.data) setAllChapters(res.data);
-    else setAllChapters([]);
-  }, [projectId]);
+  // 合并导出弹窗的懒加载章节列表
+  const mergeLazyList = useChapterLazyList({ projectId });
 
   // 加载选中章节的完整数据（含 text_content）
   const loadChapterDetail = useCallback(async (chapterId: number) => {
@@ -722,10 +722,29 @@ export default function ProjectDetail() {
     // 通过 API 代理访问音频文件
     const src = `/api/lines/audio-file?path=${encodeURIComponent(row.audio_path)}`;
     audio.src = src;
-    audio.currentTime = 0;
+    audio.load(); // 显式触发加载，确保浏览器重新请求资源
     setPlayingLineId(row.id);
     setPlayingVoiceId(null);
-    audio.play().catch(() => message.error('无法播放音频'));
+    const onCanPlay = () => {
+      audio.removeEventListener('canplay', onCanPlay);
+      audio.removeEventListener('error', onError);
+      audio.play().catch((err) => {
+        console.error('音频播放失败:', err);
+        message.error(`无法播放音频: ${err.message || '未知错误'}`);
+        setPlayingLineId(null);
+      });
+    };
+    const onError = () => {
+      audio.removeEventListener('canplay', onCanPlay);
+      audio.removeEventListener('error', onError);
+      const errCode = audio.error?.code;
+      const errMsg = audio.error?.message || '未知错误';
+      console.error('音频加载失败:', { code: errCode, message: errMsg, src });
+      message.error(`音频加载失败 (code=${errCode}): ${errMsg}`);
+      setPlayingLineId(null);
+    };
+    audio.addEventListener('canplay', onCanPlay);
+    audio.addEventListener('error', onError);
   };
 
   const handlePlayVoice = (voiceId: number) => {
@@ -741,10 +760,29 @@ export default function ProjectDetail() {
       return;
     }
     audio.src = `/api/voices/audio-file?path=${encodeURIComponent(voice.reference_path)}`;
-    audio.currentTime = 0;
+    audio.load();
     setPlayingVoiceId(voiceId);
     setPlayingLineId(null);
-    audio.play().catch(() => message.error('无法播放'));
+    const onCanPlay = () => {
+      audio.removeEventListener('canplay', onCanPlay);
+      audio.removeEventListener('error', onError);
+      audio.play().catch((err) => {
+        console.error('音色试听播放失败:', err);
+        message.error(`无法播放: ${err.message || '未知错误'}`);
+        setPlayingVoiceId(null);
+      });
+    };
+    const onError = () => {
+      audio.removeEventListener('canplay', onCanPlay);
+      audio.removeEventListener('error', onError);
+      const errCode = audio.error?.code;
+      const errMsg = audio.error?.message || '未知错误';
+      console.error('音色音频加载失败:', { code: errCode, message: errMsg });
+      message.error(`音频加载失败 (code=${errCode}): ${errMsg}`);
+      setPlayingVoiceId(null);
+    };
+    audio.addEventListener('canplay', onCanPlay);
+    audio.addEventListener('error', onError);
   };
 
   // ==================== 角色操作 ====================
@@ -841,7 +879,7 @@ export default function ProjectDetail() {
     setMergeDurationMinutes(30);
     setMergeResults(null);
     setMergeModalOpen(true);
-    loadAllChapters(); // 加载全量轻量章节列表
+    mergeLazyList.init(); // 懒加载章节列表
   };
 
   const handleMergeExport = async () => {
@@ -874,7 +912,13 @@ export default function ProjectDetail() {
 
   const handleMergeSelectAll = (checked: boolean) => {
     if (checked) {
-      setMergeSelectedChapters(allChapters.map(c => c.id));
+      // 选中当前已加载的章节
+      const ids = mergeLazyList.chapters.map(c => c.id);
+      setMergeSelectedChapters(prev => {
+        const combined = new Set([...prev, ...ids]);
+        return Array.from(combined);
+      });
+      message.info('已选中当前可见章节。如需全部选中，请滚动加载更多。');
     } else {
       setMergeSelectedChapters([]);
     }
@@ -882,15 +926,47 @@ export default function ProjectDetail() {
 
   const handleMergeChapterToggle = (chapterId: number, checked: boolean) => {
     if (checked) {
-      setMergeSelectedChapters(prev => [...prev, chapterId].sort((a, b) => {
-        const idxA = allChapters.findIndex(c => c.id === a);
-        const idxB = allChapters.findIndex(c => c.id === b);
-        return idxA - idxB;
-      }));
+      setMergeSelectedChapters(prev => [...prev, chapterId]);
     } else {
       setMergeSelectedChapters(prev => prev.filter(id => id !== chapterId));
     }
   };
+
+  // 合并导出：按范围选择
+  const handleMergeSelectRange = useCallback(async () => {
+    const start = Math.max(1, mergeRangeStart);
+    const end = Math.min(mergeLazyList.total, mergeRangeEnd);
+    if (start > end) {
+      message.warning('起始章节不能大于结束章节');
+      return;
+    }
+    setMergeRangeLoading(true);
+    try {
+      const res = await chapterApi.getIdsByRange(projectId, { start, end });
+      if (res.data && res.data.length > 0) {
+        setMergeSelectedChapters(res.data);
+        message.success(`已选中第 ${start} ~ ${end} 章，共 ${res.data.length} 个章节`);
+      } else {
+        setMergeSelectedChapters([]);
+        message.warning(`第 ${start} ~ ${end} 章中没有章节`);
+      }
+      // 清空列表并跳转到 L 位置
+      mergeLazyList.reset();
+      await mergeLazyList.jumpToIndex(start);
+    } catch {
+      message.error('获取范围章节失败');
+    } finally {
+      setMergeRangeLoading(false);
+    }
+  }, [mergeRangeStart, mergeRangeEnd, mergeLazyList, projectId]);
+
+  // 初始化合并范围
+  useEffect(() => {
+    if (mergeModalOpen && mergeLazyList.total > 0) {
+      setMergeRangeStart(1);
+      setMergeRangeEnd(mergeLazyList.total);
+    }
+  }, [mergeModalOpen, mergeLazyList.total]);
 
   // ==================== 台词表格列 ====================
   const statusType = (s: string) => {
@@ -1280,7 +1356,7 @@ export default function ProjectDetail() {
               cursor: 'pointer',
               flexShrink: 0,
             }}
-            onClick={() => { loadAllChapters(); setBatchLLMModalOpen(true); }}
+            onClick={() => setBatchLLMModalOpen(true)}
           >
             <Space>
               <RobotOutlined style={{ color: '#818cf8', fontSize: 16 }} spin />
@@ -1352,7 +1428,7 @@ export default function ProjectDetail() {
                     size="small"
                     icon={<RobotOutlined />}
                     style={{ background: '#6366f1', color: '#fff', borderColor: '#6366f1' }}
-                    onClick={() => { loadAllChapters(); setBatchLLMModalOpen(true); }}
+                    onClick={() => setBatchLLMModalOpen(true)}
                   >
                     批量LLM
                   </Button>
@@ -1360,7 +1436,7 @@ export default function ProjectDetail() {
                     size="small"
                     icon={<SoundOutlined />}
                     style={{ background: '#52c41a', color: '#fff', borderColor: '#52c41a' }}
-                    onClick={() => { loadAllChapters(); setBatchTTSModalOpen(true); }}
+                    onClick={() => setBatchTTSModalOpen(true)}
                   >
                     批量配音
                   </Button>
@@ -1718,7 +1794,6 @@ export default function ProjectDetail() {
         open={batchLLMModalOpen}
         onClose={() => setBatchLLMModalOpen(false)}
         projectId={projectId}
-        chapters={allChapters}
         onComplete={() => {
           loadChapters(1, chapterKeyword);
           loadLines();
@@ -1737,7 +1812,6 @@ export default function ProjectDetail() {
         open={batchTTSModalOpen}
         onClose={() => setBatchTTSModalOpen(false)}
         projectId={projectId}
-        chapters={allChapters}
         onComplete={() => {
           loadLines();
         }}
@@ -1798,29 +1872,75 @@ export default function ProjectDetail() {
             <div style={{ marginBottom: 16 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                 <Typography.Text strong>选择章节：</Typography.Text>
-                <Checkbox
-                  checked={mergeSelectedChapters.length === allChapters.length && allChapters.length > 0}
-                  indeterminate={mergeSelectedChapters.length > 0 && mergeSelectedChapters.length < allChapters.length}
-                  onChange={(e) => handleMergeSelectAll(e.target.checked)}
-                >
-                  全选
-                </Checkbox>
+                <Space size={8}>
+                  <a onClick={() => handleMergeSelectAll(true)} style={{ fontSize: 12 }}>选中可见的</a>
+                  <a onClick={() => handleMergeSelectAll(false)} style={{ fontSize: 12 }}>取消全选</a>
+                </Space>
               </div>
-              <div style={{ maxHeight: 240, overflowY: 'auto', border: '1px solid #d9d9d9', borderRadius: 6, padding: 8 }}>
-                {allChapters.map((ch) => (
-                  <div key={ch.id} style={{ padding: '4px 0' }}>
-                    <Checkbox
-                      checked={mergeSelectedChapters.includes(ch.id)}
-                      onChange={(e) => handleMergeChapterToggle(ch.id, e.target.checked)}
-                    >
-                      {ch.title}
-                    </Checkbox>
-                  </div>
-                ))}
-                {allChapters.length === 0 && <Empty description="暂无章节" image={Empty.PRESENTED_IMAGE_SIMPLE} />}
+              {/* 范围快捷选择 */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, background: '#f5f5f5', borderRadius: 6, padding: '6px 10px' }}>
+                <Typography.Text style={{ fontSize: 12, whiteSpace: 'nowrap' }}>从第</Typography.Text>
+                <InputNumber
+                  size="small"
+                  min={1}
+                  max={mergeLazyList.total || 1}
+                  value={mergeRangeStart}
+                  onChange={(v) => setMergeRangeStart(v ?? 1)}
+                  style={{ width: 70 }}
+                />
+                <Typography.Text style={{ fontSize: 12, whiteSpace: 'nowrap' }}>章 到 第</Typography.Text>
+                <InputNumber
+                  size="small"
+                  min={1}
+                  max={mergeLazyList.total || 1}
+                  value={mergeRangeEnd}
+                  onChange={(v) => setMergeRangeEnd(v ?? mergeLazyList.total)}
+                  style={{ width: 70 }}
+                />
+                <Typography.Text style={{ fontSize: 12, whiteSpace: 'nowrap' }}>章</Typography.Text>
+                <Button
+                  size="small"
+                  type="primary"
+                  loading={mergeRangeLoading}
+                  onClick={handleMergeSelectRange}
+                >
+                  应用范围
+                </Button>
+              </div>
+              <div
+                ref={mergeLazyList.listRef as React.RefObject<HTMLDivElement>}
+                onScroll={mergeLazyList.handleScroll}
+                style={{ maxHeight: 240, overflowY: 'auto', border: '1px solid #d9d9d9', borderRadius: 6, padding: 8 }}
+              >
+                {mergeLazyList.hasLess && !mergeLazyList.loading && (
+                  <div style={{ textAlign: 'center', padding: 4, color: '#585b70', fontSize: 11 }}>↑ 向上滚动加载更多</div>
+                )}
+                {mergeLazyList.chapters.map((ch, idx) => {
+                  const globalIndex = mergeLazyList.offsetStart + idx + 1;
+                  return (
+                    <div key={ch.id} data-chapter-item style={{ padding: '4px 0' }}>
+                      <Checkbox
+                        checked={mergeSelectedChapters.includes(ch.id)}
+                        onChange={(e) => handleMergeChapterToggle(ch.id, e.target.checked)}
+                      >
+                        <span style={{ color: '#585b70', fontSize: 11, marginRight: 4 }}>#{globalIndex}</span>
+                        {ch.title}
+                      </Checkbox>
+                    </div>
+                  );
+                })}
+                {mergeLazyList.loading && (
+                  <div style={{ textAlign: 'center', padding: 8, color: '#585b70', fontSize: 11 }}>加载中...</div>
+                )}
+                {!mergeLazyList.loading && mergeLazyList.chapters.length === 0 && (
+                  <Empty description="暂无章节" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                )}
+                {!mergeLazyList.loading && !mergeLazyList.hasMore && mergeLazyList.chapters.length > 0 && (
+                  <div style={{ textAlign: 'center', padding: 4, color: '#585b70', fontSize: 11 }}>已加载全部</div>
+                )}
               </div>
               <Typography.Text type="secondary" style={{ fontSize: 12, marginTop: 4, display: 'block' }}>
-                已选 {mergeSelectedChapters.length} / {allChapters.length} 章
+                已选 {mergeSelectedChapters.length} / {mergeLazyList.total} 章
               </Typography.Text>
             </div>
 

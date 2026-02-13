@@ -1,9 +1,10 @@
 import { RobotOutlined, StopOutlined } from '@ant-design/icons';
 import { Checkbox, InputNumber, Modal, Progress, Space, Tag, Typography, message } from 'antd';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { batchApi } from '../api';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { batchApi, chapterApi } from '../api';
+import { useChapterLazyList } from '../hooks/useChapterLazyList';
 import { useWebSocket } from '../hooks/useWebSocket';
-import type { ChapterBrief, WSEvent } from '../types';
+import type { WSEvent } from '../types';
 import LogPanel from './LogPanel';
 
 const { Text } = Typography;
@@ -12,7 +13,6 @@ interface BatchLLMModalProps {
   open: boolean;
   onClose: () => void;
   projectId: number;
-  chapters: ChapterBrief[];
   onComplete?: () => void;
   /** 任务运行状态变化时通知父组件（用于显示后台进度提示） */
   onRunningChange?: (running: boolean, progress: number, current: number, total: number) => void;
@@ -24,7 +24,7 @@ interface ChapterStatus {
   status: 'pending' | 'processing' | 'done' | 'error' | 'skipped' | 'cancelled';
 }
 
-export default function BatchLLMModal({ open, onClose, projectId, chapters, onComplete, onRunningChange }: BatchLLMModalProps) {
+export default function BatchLLMModal({ open, onClose, projectId, onComplete, onRunningChange }: BatchLLMModalProps) {
   const { subscribe } = useWebSocket();
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [running, setRunning] = useState(false);
@@ -33,68 +33,72 @@ export default function BatchLLMModal({ open, onClose, projectId, chapters, onCo
   const [progress, setProgress] = useState(0);
   const [current, setCurrent] = useState(0);
   const [total, setTotal] = useState(0);
-  const [chapterStatuses, setChapterStatuses] = useState<ChapterStatus[]>([]);
+  const [chapterStatuses, setChapterStatuses] = useState<Map<number, ChapterStatus>>(new Map());
   const [concurrency, setConcurrency] = useState(1);
   // 标记是否已经初始化过（防止重复重置正在运行的任务状态）
   const hasInitRef = useRef(false);
+
+  // 使用懒加载 Hook
+  const lazyList = useChapterLazyList({ projectId });
 
   // 通知父组件运行状态变化
   useEffect(() => {
     onRunningChange?.(running, progress, current, total);
   }, [running, progress, current, total, onRunningChange]);
 
-  // 弹窗打开时：如果没有正在运行的任务才重置状态，否则保留
+  // 弹窗打开时：初始化懒加载列表 + 检查后台任务状态
   useEffect(() => {
-    if (open && !running) {
-      // 查询后端是否有正在运行的任务
-      batchApi.llmStatus(projectId).then((res) => {
-        if (res.code === 200 && res.data?.running) {
-          // 后端有任务在运行，恢复运行状态
-          setRunning(true);
-          setCancelling(res.data.cancelled || false);
-          if (logs.length === 0) {
-            setLogs(['🔄 检测到后台有正在运行的批量LLM任务，已恢复监听...']);
+    if (open) {
+      // 初始化懒加载列表
+      lazyList.init();
+
+      if (!running) {
+        // 查询后端是否有正在运行的任务
+        batchApi.llmStatus(projectId).then((res) => {
+          if (res.code === 200 && res.data?.running) {
+            setRunning(true);
+            setCancelling(res.data.cancelled || false);
+            if (logs.length === 0) {
+              setLogs(['🔄 检测到后台有正在运行的批量LLM任务，已恢复监听...']);
+            }
+          } else if (!hasInitRef.current) {
+            setLogs([]);
+            setProgress(0);
+            setCurrent(0);
+            setTotal(0);
+            setCancelling(false);
+            setChapterStatuses(new Map());
+            setSelectedIds([]);
+            hasInitRef.current = true;
           }
-        } else if (!hasInitRef.current) {
-          // 没有后台任务，且是首次打开，初始化选中章节
-          const validIds = chapters.filter((c) => c.has_content).map((c) => c.id);
-          setSelectedIds(validIds);
-          setLogs([]);
-          setProgress(0);
-          setCurrent(0);
-          setTotal(0);
-          setCancelling(false);
-          setChapterStatuses(chapters.map((c) => ({ id: c.id, title: c.title, status: 'pending' })));
-          hasInitRef.current = true;
-        }
-      }).catch(() => {
-        // 查询失败时，如果是首次打开就正常初始化
-        if (!hasInitRef.current) {
-          const validIds = chapters.filter((c) => c.has_content).map((c) => c.id);
-          setSelectedIds(validIds);
-          setLogs([]);
-          setProgress(0);
-          setCurrent(0);
-          setTotal(0);
-          setCancelling(false);
-          setChapterStatuses(chapters.map((c) => ({ id: c.id, title: c.title, status: 'pending' })));
-          hasInitRef.current = true;
-        }
-      });
+        }).catch(() => {
+          if (!hasInitRef.current) {
+            setLogs([]);
+            setProgress(0);
+            setCurrent(0);
+            setTotal(0);
+            setCancelling(false);
+            setChapterStatuses(new Map());
+            setSelectedIds([]);
+            hasInitRef.current = true;
+          }
+        });
+      }
     }
   }, [open, projectId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // chapters 变化时更新章节状态列表（但保留已有状态）
+  // 懒加载列表加载后，自动选中有内容的章节（仅首次初始化时）
   useEffect(() => {
-    if (chapters.length > 0) {
-      setChapterStatuses((prev) => {
-        const prevMap = new Map(prev.map((cs) => [cs.id, cs]));
-        return chapters.map((c) => prevMap.get(c.id) || { id: c.id, title: c.title, status: 'pending' as const });
+    if (open && lazyList.chapters.length > 0 && hasInitRef.current && selectedIds.length === 0 && !running) {
+      const validIds = lazyList.chapters.filter((c) => c.has_content).map((c) => c.id);
+      setSelectedIds(prev => {
+        const combined = new Set([...prev, ...validIds]);
+        return Array.from(combined);
       });
     }
-  }, [chapters]);
+  }, [lazyList.chapters]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // WebSocket 事件监听：始终监听，不依赖 open（这样弹窗关闭也能收到状态更新）
+  // WebSocket 事件监听：始终监听，不依赖 open
   useEffect(() => {
     const unsubs = [
       subscribe('batch_llm_progress', (data: WSEvent) => {
@@ -102,15 +106,23 @@ export default function BatchLLMModal({ open, onClose, projectId, chapters, onCo
         const log = data.log as string;
         const status = data.status as string;
         const chapterId = data.chapter_id as number;
+        const chapterTitle = data.chapter_title as string | undefined;
 
         setLogs((prev) => [...prev, log]);
         setProgress(data.progress as number);
         setCurrent(data.current as number);
         setTotal(data.total as number);
 
-        setChapterStatuses((prev) =>
-          prev.map((cs) => (cs.id === chapterId ? { ...cs, status: status as ChapterStatus['status'] } : cs)),
-        );
+        setChapterStatuses((prev) => {
+          const next = new Map(prev);
+          const existing = next.get(chapterId);
+          next.set(chapterId, {
+            id: chapterId,
+            title: existing?.title || chapterTitle || `章节 ${chapterId}`,
+            status: status as ChapterStatus['status'],
+          });
+          return next;
+        });
       }),
       subscribe('batch_llm_log', (data: WSEvent) => {
         if (data.project_id !== projectId) return;
@@ -122,13 +134,8 @@ export default function BatchLLMModal({ open, onClose, projectId, chapters, onCo
         setProgress(100);
         setRunning(false);
         setCancelling(false);
-        // 重置初始化标记，下次打开弹窗会重新初始化
         hasInitRef.current = false;
         if (data.cancelled) {
-          // 将所有仍为 pending 的章节标记为 cancelled
-          setChapterStatuses((prev) =>
-            prev.map((cs) => (cs.status === 'pending' ? { ...cs, status: 'cancelled' } : cs)),
-          );
           message.warning('批量LLM解析已取消');
         } else {
           message.success('批量LLM解析全部完成！');
@@ -152,10 +159,17 @@ export default function BatchLLMModal({ open, onClose, projectId, chapters, onCo
     setCurrent(0);
     setTotal(selectedIds.length);
 
-    // 重置状态
-    setChapterStatuses((prev) =>
-      prev.map((cs) => ({ ...cs, status: selectedIds.includes(cs.id) ? 'pending' : cs.status })),
-    );
+    // 重置已选章节的状态
+    setChapterStatuses((prev) => {
+      const next = new Map(prev);
+      selectedIds.forEach((id) => {
+        const existing = next.get(id);
+        if (existing) {
+          next.set(id, { ...existing, status: 'pending' });
+        }
+      });
+      return next;
+    });
 
     try {
       const res = await batchApi.llmParse({ project_id: projectId, chapter_ids: selectedIds, concurrency });
@@ -190,43 +204,58 @@ export default function BatchLLMModal({ open, onClose, projectId, chapters, onCo
   const [rangeStart, setRangeStart] = useState<number>(1);
   const [rangeEnd, setRangeEnd] = useState<number>(1);
 
-  // 排序后的章节列表（按 order_index 或数组索引）
-  const sortedChapters = useMemo(() => {
-    return [...chapters].sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0));
-  }, [chapters]);
-
   // 初始化范围
   useEffect(() => {
-    if (open && sortedChapters.length > 0) {
+    if (open && lazyList.total > 0) {
       setRangeStart(1);
-      setRangeEnd(sortedChapters.length);
+      setRangeEnd(lazyList.total);
     }
-  }, [open, sortedChapters.length]);
+  }, [open, lazyList.total]);
 
   const handleSelectAll = () => {
-    const validIds = sortedChapters.filter((c) => c.has_content).map((c) => c.id);
-    setSelectedIds(validIds);
+    // 全选：选中当前已加载列表中有内容的章节
+    const validIds = lazyList.chapters.filter((c) => c.has_content).map((c) => c.id);
+    setSelectedIds(prev => {
+      const combined = new Set([...prev, ...validIds]);
+      return Array.from(combined);
+    });
+    message.info('已选中当前可见的有内容章节。如需全部选中，请使用范围选择。');
   };
 
   const handleDeselectAll = () => {
     setSelectedIds([]);
   };
 
-  // 按范围选择
-  const handleSelectRange = () => {
+  // 按范围选择：通过后端接口直接获取范围内所有有内容的章节 ID
+  const [rangeLoading, setRangeLoading] = useState(false);
+  const handleSelectRange = useCallback(async () => {
     const start = Math.max(1, rangeStart);
-    const end = Math.min(sortedChapters.length, rangeEnd);
+    const end = Math.min(lazyList.total, rangeEnd);
     if (start > end) {
       message.warning('起始章节不能大于结束章节');
       return;
     }
-    const rangeChapters = sortedChapters.slice(start - 1, end);
-    const validIds = rangeChapters
-      .filter((c) => c.has_content)
-      .map((c) => c.id);
-    setSelectedIds(validIds);
-    message.success(`已选中第 ${start} ~ ${end} 章中有内容的 ${validIds.length} 个章节`);
-  };
+
+    setRangeLoading(true);
+    try {
+      // 通过后端接口获取范围内所有有内容的章节 ID
+      const res = await chapterApi.getIdsByRange(projectId, { start, end, has_content_only: true });
+      if (res.data && res.data.length > 0) {
+        setSelectedIds(res.data);
+        message.success(`已选中第 ${start} ~ ${end} 章中 ${res.data.length} 个有内容的章节`);
+      } else {
+        setSelectedIds([]);
+        message.warning(`第 ${start} ~ ${end} 章中没有有内容的章节`);
+      }
+      // 清空列表并跳转到 L 位置
+      lazyList.reset();
+      await lazyList.jumpToIndex(start);
+    } catch {
+      message.error('获取范围章节失败');
+    } finally {
+      setRangeLoading(false);
+    }
+  }, [rangeStart, rangeEnd, lazyList, projectId]);
 
   const statusColor: Record<string, string> = {
     pending: 'default',
@@ -347,7 +376,7 @@ export default function BatchLLMModal({ open, onClose, projectId, chapters, onCo
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
           <Text strong style={{ color: '#cdd6f4' }}>选择章节范围</Text>
           <Space size={8}>
-            <a onClick={handleSelectAll} style={{ fontSize: 12 }}>全选有内容的</a>
+            <a onClick={handleSelectAll} style={{ fontSize: 12 }}>选中可见的</a>
             <a onClick={handleDeselectAll} style={{ fontSize: 12 }}>取消全选</a>
           </Space>
         </div>
@@ -357,7 +386,7 @@ export default function BatchLLMModal({ open, onClose, projectId, chapters, onCo
           <InputNumber
             size="small"
             min={1}
-            max={sortedChapters.length}
+            max={lazyList.total || 1}
             value={rangeStart}
             onChange={(v) => setRangeStart(v ?? 1)}
             style={{ width: 80 }}
@@ -367,52 +396,78 @@ export default function BatchLLMModal({ open, onClose, projectId, chapters, onCo
           <InputNumber
             size="small"
             min={1}
-            max={sortedChapters.length}
+            max={lazyList.total || 1}
             value={rangeEnd}
-            onChange={(v) => setRangeEnd(v ?? sortedChapters.length)}
+            onChange={(v) => setRangeEnd(v ?? lazyList.total)}
             style={{ width: 80 }}
             disabled={running}
           />
           <Text style={{ color: '#a6adc8', fontSize: 12, whiteSpace: 'nowrap' }}>章</Text>
           <button
             onClick={handleSelectRange}
-            disabled={running}
+            disabled={running || rangeLoading}
             style={{
               padding: '2px 12px',
-              background: '#6366f1',
+              background: rangeLoading ? '#45475a' : '#6366f1',
               border: 'none',
               borderRadius: 4,
               color: '#fff',
-              cursor: running ? 'not-allowed' : 'pointer',
+              cursor: (running || rangeLoading) ? 'not-allowed' : 'pointer',
               fontSize: 12,
               whiteSpace: 'nowrap',
             }}
           >
-            应用范围
+            {rangeLoading ? '加载中...' : '应用范围'}
           </button>
-          <Text style={{ color: '#585b70', fontSize: 11 }}>共 {sortedChapters.length} 章，已选 {selectedIds.length} 章</Text>
+          <Text style={{ color: '#585b70', fontSize: 11 }}>共 {lazyList.total} 章，已选 {selectedIds.length} 章</Text>
         </div>
-        <div style={{ maxHeight: 200, overflowY: 'auto', background: '#181825', borderRadius: 8, padding: 12, border: '1px solid #313244' }}>
-          <Checkbox.Group
-            value={selectedIds}
-            onChange={(vals) => setSelectedIds(vals as number[])}
-            style={{ display: 'flex', flexDirection: 'column', gap: 6 }}
-          >
-            {sortedChapters.map((ch, idx) => (
-              <div key={ch.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Checkbox value={ch.id} disabled={running}>
-                  <span style={{ color: '#585b70', fontSize: 11, marginRight: 4 }}>#{idx + 1}</span>
-                  <span style={{ color: '#cdd6f4' }}>{ch.title}</span>
-                  {!ch.has_content && (
-                    <Tag color="warning" style={{ marginLeft: 8, fontSize: 10 }}>无内容</Tag>
-                  )}
-                </Checkbox>
-                <Tag color={statusColor[chapterStatuses.find((cs) => cs.id === ch.id)?.status || 'pending']}>
-                  {statusLabel[chapterStatuses.find((cs) => cs.id === ch.id)?.status || 'pending']}
-                </Tag>
-              </div>
-            ))}
-          </Checkbox.Group>
+        <div
+          ref={lazyList.listRef as React.RefObject<HTMLDivElement>}
+          onScroll={lazyList.handleScroll}
+          style={{ maxHeight: 200, overflowY: 'auto', background: '#181825', borderRadius: 8, padding: 12, border: '1px solid #313244' }}
+        >
+          {lazyList.hasLess && !lazyList.loading && (
+            <div style={{ textAlign: 'center', padding: 4, color: '#585b70', fontSize: 11 }}>↑ 向上滚动加载更多</div>
+          )}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {lazyList.chapters.map((ch) => {
+              const globalIndex = lazyList.offsetStart + lazyList.chapters.indexOf(ch) + 1;
+              const cs = chapterStatuses.get(ch.id);
+              return (
+                <div key={ch.id} data-chapter-item style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Checkbox
+                    checked={selectedIds.includes(ch.id)}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setSelectedIds(prev => [...prev, ch.id]);
+                      } else {
+                        setSelectedIds(prev => prev.filter(id => id !== ch.id));
+                      }
+                    }}
+                    disabled={running}
+                  >
+                    <span style={{ color: '#585b70', fontSize: 11, marginRight: 4 }}>#{globalIndex}</span>
+                    <span style={{ color: '#cdd6f4' }}>{ch.title}</span>
+                    {!ch.has_content && (
+                      <Tag color="warning" style={{ marginLeft: 8, fontSize: 10 }}>无内容</Tag>
+                    )}
+                  </Checkbox>
+                  <Tag color={statusColor[cs?.status || 'pending']}>
+                    {statusLabel[cs?.status || 'pending']}
+                  </Tag>
+                </div>
+              );
+            })}
+          </div>
+          {lazyList.loading && (
+            <div style={{ textAlign: 'center', padding: 8, color: '#585b70', fontSize: 11 }}>加载中...</div>
+          )}
+          {!lazyList.loading && lazyList.chapters.length === 0 && (
+            <div style={{ textAlign: 'center', padding: 12, color: '#585b70' }}>暂无章节</div>
+          )}
+          {!lazyList.loading && !lazyList.hasMore && lazyList.chapters.length > 0 && (
+            <div style={{ textAlign: 'center', padding: 4, color: '#585b70', fontSize: 11 }}>已加载全部</div>
+          )}
         </div>
       </div>
 
