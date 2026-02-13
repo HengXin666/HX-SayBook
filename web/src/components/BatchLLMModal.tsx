@@ -1,6 +1,6 @@
 import { RobotOutlined, StopOutlined } from '@ant-design/icons';
 import { Checkbox, InputNumber, Modal, Progress, Space, Tag, Typography, message } from 'antd';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { batchApi } from '../api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import type { ChapterBrief, WSEvent } from '../types';
@@ -14,6 +14,8 @@ interface BatchLLMModalProps {
   projectId: number;
   chapters: ChapterBrief[];
   onComplete?: () => void;
+  /** 任务运行状态变化时通知父组件（用于显示后台进度提示） */
+  onRunningChange?: (running: boolean, progress: number, current: number, total: number) => void;
 }
 
 interface ChapterStatus {
@@ -22,7 +24,7 @@ interface ChapterStatus {
   status: 'pending' | 'processing' | 'done' | 'error' | 'skipped' | 'cancelled';
 }
 
-export default function BatchLLMModal({ open, onClose, projectId, chapters, onComplete }: BatchLLMModalProps) {
+export default function BatchLLMModal({ open, onClose, projectId, chapters, onComplete, onRunningChange }: BatchLLMModalProps) {
   const { subscribe } = useWebSocket();
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [running, setRunning] = useState(false);
@@ -33,25 +35,67 @@ export default function BatchLLMModal({ open, onClose, projectId, chapters, onCo
   const [total, setTotal] = useState(0);
   const [chapterStatuses, setChapterStatuses] = useState<ChapterStatus[]>([]);
   const [concurrency, setConcurrency] = useState(1);
+  // 标记是否已经初始化过（防止重复重置正在运行的任务状态）
+  const hasInitRef = useRef(false);
 
-  // 初始化选中所有有内容的章节
+  // 通知父组件运行状态变化
   useEffect(() => {
-    if (open) {
-      const validIds = chapters.filter((c) => c.has_content).map((c) => c.id);
-      setSelectedIds(validIds);
-      setLogs([]);
-      setProgress(0);
-      setCurrent(0);
-      setTotal(0);
-      setCancelling(false);
-      setChapterStatuses(chapters.map((c) => ({ id: c.id, title: c.title, status: 'pending' })));
+    onRunningChange?.(running, progress, current, total);
+  }, [running, progress, current, total, onRunningChange]);
+
+  // 弹窗打开时：如果没有正在运行的任务才重置状态，否则保留
+  useEffect(() => {
+    if (open && !running) {
+      // 查询后端是否有正在运行的任务
+      batchApi.llmStatus(projectId).then((res) => {
+        if (res.code === 200 && res.data?.running) {
+          // 后端有任务在运行，恢复运行状态
+          setRunning(true);
+          setCancelling(res.data.cancelled || false);
+          if (logs.length === 0) {
+            setLogs(['🔄 检测到后台有正在运行的批量LLM任务，已恢复监听...']);
+          }
+        } else if (!hasInitRef.current) {
+          // 没有后台任务，且是首次打开，初始化选中章节
+          const validIds = chapters.filter((c) => c.has_content).map((c) => c.id);
+          setSelectedIds(validIds);
+          setLogs([]);
+          setProgress(0);
+          setCurrent(0);
+          setTotal(0);
+          setCancelling(false);
+          setChapterStatuses(chapters.map((c) => ({ id: c.id, title: c.title, status: 'pending' })));
+          hasInitRef.current = true;
+        }
+      }).catch(() => {
+        // 查询失败时，如果是首次打开就正常初始化
+        if (!hasInitRef.current) {
+          const validIds = chapters.filter((c) => c.has_content).map((c) => c.id);
+          setSelectedIds(validIds);
+          setLogs([]);
+          setProgress(0);
+          setCurrent(0);
+          setTotal(0);
+          setCancelling(false);
+          setChapterStatuses(chapters.map((c) => ({ id: c.id, title: c.title, status: 'pending' })));
+          hasInitRef.current = true;
+        }
+      });
     }
-  }, [open, chapters]);
+  }, [open, projectId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 监听 WebSocket 事件
+  // chapters 变化时更新章节状态列表（但保留已有状态）
   useEffect(() => {
-    if (!open) return;
+    if (chapters.length > 0) {
+      setChapterStatuses((prev) => {
+        const prevMap = new Map(prev.map((cs) => [cs.id, cs]));
+        return chapters.map((c) => prevMap.get(c.id) || { id: c.id, title: c.title, status: 'pending' as const });
+      });
+    }
+  }, [chapters]);
 
+  // WebSocket 事件监听：始终监听，不依赖 open（这样弹窗关闭也能收到状态更新）
+  useEffect(() => {
     const unsubs = [
       subscribe('batch_llm_progress', (data: WSEvent) => {
         if (data.project_id !== projectId) return;
@@ -78,7 +122,13 @@ export default function BatchLLMModal({ open, onClose, projectId, chapters, onCo
         setProgress(100);
         setRunning(false);
         setCancelling(false);
+        // 重置初始化标记，下次打开弹窗会重新初始化
+        hasInitRef.current = false;
         if (data.cancelled) {
+          // 将所有仍为 pending 的章节标记为 cancelled
+          setChapterStatuses((prev) =>
+            prev.map((cs) => (cs.status === 'pending' ? { ...cs, status: 'cancelled' } : cs)),
+          );
           message.warning('批量LLM解析已取消');
         } else {
           message.success('批量LLM解析全部完成！');
@@ -88,7 +138,7 @@ export default function BatchLLMModal({ open, onClose, projectId, chapters, onCo
     ];
 
     return () => unsubs.forEach((fn) => fn());
-  }, [open, subscribe, projectId, onComplete]);
+  }, [subscribe, projectId, onComplete]);
 
   const handleStart = useCallback(async () => {
     if (selectedIds.length === 0) {
@@ -205,27 +255,25 @@ export default function BatchLLMModal({ open, onClose, projectId, chapters, onCo
         </Space>
       }
       open={open}
-      onCancel={running ? undefined : onClose}
-      closable={!running}
+      onCancel={onClose}
+      closable={true}
       maskClosable={!running}
       width={800}
       footer={
         <Space>
-          {!running && (
-            <button
-              onClick={onClose}
-              style={{
-                padding: '6px 16px',
-                background: 'transparent',
-                border: '1px solid #313244',
-                borderRadius: 6,
-                color: '#cdd6f4',
-                cursor: 'pointer',
-              }}
-            >
-              关闭
-            </button>
-          )}
+          <button
+            onClick={onClose}
+            style={{
+              padding: '6px 16px',
+              background: 'transparent',
+              border: '1px solid #313244',
+              borderRadius: 6,
+              color: '#cdd6f4',
+              cursor: 'pointer',
+            }}
+          >
+            {running ? '后台运行' : '关闭'}
+          </button>
           {running && (
             <button
               onClick={handleCancel}
@@ -264,7 +312,6 @@ export default function BatchLLMModal({ open, onClose, projectId, chapters, onCo
           </button>
         </Space>
       }
-      destroyOnClose
     >
       {/* 进度条 */}
       {running && (
