@@ -1,4 +1,4 @@
-import type { BatchLLMRequest, BatchTTSRequest, Chapter, Emotion, Line, LLMProvider, Project, Prompt, Res, Role, RoleWithLineCount, Strength, TTSProvider, Voice, VoiceDebugRequest } from '../types';
+import type { BatchLLMRequest, BatchTTSRequest, Chapter, ChapterBrief, ChapterPageResponse, Emotion, Line, LLMProvider, Project, Prompt, Res, Role, RoleWithLineCount, Strength, TTSProvider, Voice, VoiceDebugRequest } from '../types';
 import api from './client';
 
 // ============================================================
@@ -17,7 +17,11 @@ export const projectApi = {
 // 章节
 // ============================================================
 export const chapterApi = {
-  getByProject: (projectId: number) => api.get<unknown, Res<Chapter[]>>(`/chapters/project/${projectId}`),
+  getByProject: (projectId: number) => api.get<unknown, Res<ChapterBrief[]>>(`/chapters/project/${projectId}`),
+  getPage: (projectId: number, params: { page?: number; page_size?: number; keyword?: string }) =>
+    api.get<unknown, Res<ChapterPageResponse>>(`/chapters/project/${projectId}/page`, { params }),
+  getPosition: (projectId: number, chapterId: number, pageSize = 50) =>
+    api.get<unknown, Res<{ position: number; page: number }>>(`/chapters/project/${projectId}/position/${chapterId}`, { params: { page_size: pageSize } }),
   get: (id: number) => api.get<unknown, Res<Chapter>>(`/chapters/${id}`),
   create: (data: Partial<Chapter>) => api.post<unknown, Res<Chapter>>('/chapters/', data),
   update: (id: number, data: Partial<Chapter>) => api.put<unknown, Res<Chapter>>(`/chapters/${id}`, data),

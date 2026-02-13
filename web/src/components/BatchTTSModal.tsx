@@ -3,7 +3,7 @@ import { Checkbox, InputNumber, Modal, Progress, Slider, Space, Tag, Typography,
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { batchApi } from '../api';
 import { useWebSocket } from '../hooks/useWebSocket';
-import type { Chapter, WSEvent } from '../types';
+import type { ChapterBrief, WSEvent } from '../types';
 import LogPanel from './LogPanel';
 
 const { Text } = Typography;
@@ -12,7 +12,7 @@ interface BatchTTSModalProps {
   open: boolean;
   onClose: () => void;
   projectId: number;
-  chapters: Chapter[];
+  chapters: ChapterBrief[];
   onComplete?: () => void;
 }
 

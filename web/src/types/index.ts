@@ -21,6 +21,17 @@ export interface Project {
   updated_at: string;
 }
 
+/** 章节简要信息（不含 text_content） */
+export interface ChapterBrief {
+  id: number;
+  project_id: number;
+  title: string;
+  order_index: number | null;
+  has_content: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 /** 章节 */
 export interface Chapter {
   id: number;
@@ -30,6 +41,14 @@ export interface Chapter {
   text_content: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/** 章节分页响应 */
+export interface ChapterPageResponse {
+  items: ChapterBrief[];
+  total: number;
+  page: number;
+  page_size: number;
 }
 
 /** 台词 */

@@ -40,7 +40,7 @@ function App() {
   const selectedKey = menuItems.find((item) => location.pathname.startsWith(item.key))?.key || '/projects';
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
+    <Layout style={{ height: '100vh', overflow: 'hidden' }}>
       <Sider
         width={220}
         collapsedWidth={64}
@@ -128,8 +128,8 @@ function App() {
           </div>
         </div>
       </Sider>
-      <Layout>
-        <Content style={{ padding: 24, overflow: 'hidden' }}>
+      <Layout style={{ overflow: 'hidden' }}>
+        <Content style={{ padding: 24, overflow: 'hidden', height: '100%' }}>
           <Routes>
             <Route path="/" element={<ProjectList />} />
             <Route path="/projects" element={<ProjectList />} />

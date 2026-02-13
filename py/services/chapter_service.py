@@ -65,18 +65,19 @@ class ChapterService:
         res = ChapterEntity(**data)
         return res
 
-    def get_all_chapters(self, project_id: int) -> Sequence[ChapterEntity]:
-        """获取所有章节列表"""
-        pos = self.repository.get_all(project_id)
-        # pos -> entities
+    def get_all_chapters(self, project_id: int) -> list[dict]:
+        """获取所有章节列表（轻量，含 has_content）"""
+        return self.repository.get_all(project_id)
 
-        entities = [
-            ChapterEntity(
-                **{k: v for k, v in po.__dict__.items() if not k.startswith("_")}
-            )
-            for po in pos
-        ]
-        return entities
+    def get_chapters_page(
+        self, project_id: int, page: int = 1, page_size: int = 50, keyword: str = ""
+    ) -> tuple:
+        """分页查询章节（支持搜索）"""
+        return self.repository.get_page(project_id, page, page_size, keyword)
+
+    def get_chapter_position(self, project_id: int, chapter_id: int) -> int | None:
+        """查询某个章节在项目有序列表中的位置（从0开始的索引）"""
+        return self.repository.get_position(project_id, chapter_id)
 
     def update_chapter(self, chapter_id: int, data: dict) -> bool:
         """更新章节
