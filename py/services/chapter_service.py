@@ -2,7 +2,6 @@ import json
 import os
 import re
 import shutil
-import threading
 from collections import defaultdict
 from typing import List
 
@@ -309,6 +308,124 @@ class ChapterService:
             voice_id_map = {voice.name: voice.id for voice in voices}
 
             # 对角色进行update
+            role_repository = RoleRepository(db)
+            res = []
+            for item in parse_data:
+                role = role_repository.get_by_name(item["role_name"], project.id)
+                if role:
+                    if item["voice_name"]:
+                        print("更新角色音色：", item["role_name"], item["voice_name"])
+                        role_repository.update(
+                            role.id,
+                            {"default_voice_id": voice_id_map.get(item["voice_name"])},
+                        )
+                        res.append(
+                            {
+                                "role_name": item["role_name"],
+                                "voice_name": item["voice_name"],
+                            }
+                        )
+
+            return True, res
+        except Exception as e:
+            print("LLM智能匹配出错：", e)
+            return False, []
+        finally:
+            db.close()
+
+    # ========== 异步方法（新增，用于协程场景，不阻塞事件循环） ==========
+
+    async def para_content_async(
+        self,
+        prompt: str,
+        chapter_id: int,
+        content: str = None,
+        role_names: List[str] = None,
+        emotion_names: List[str] = None,
+        strength_names: List[str] = None,
+        is_precise_fill: int = 0,
+    ):
+        """异步版 LLM 解析章节内容，所有网络 IO 均为非阻塞"""
+        db = SessionLocal()
+        try:
+            chapter = self.repository.get_by_id(chapter_id)
+            prompt = self.fill_prompt(
+                prompt, role_names, emotion_names, strength_names, content
+            )
+
+            project_repository = ProjectRepository(db)
+            project = project_repository.get_by_id(chapter.project_id)
+            llm_provider_id = project.llm_provider_id
+
+            llm_provider_repository = LLMProviderRepository(db)
+            llm_provider = llm_provider_repository.get_by_id(llm_provider_id)
+            llm = LLMEngine(
+                llm_provider.api_key,
+                llm_provider.api_base_url,
+                project.llm_model,
+                llm_provider.custom_params,
+            )
+            # 异步测试 LLM 连通性
+            try:
+                await llm.generate_text_test_async(
+                    "请输出一份用户信息，严格使用 JSON 格式，不要包含任何额外文字。字段包括：name, age, city"
+                )
+                print("LLM可用")
+            except Exception as e:
+                print("LLM不可用")
+                return {"success": False, "message": f"LLM 不可用: {str(e)}"}
+
+            print("开始内容解析（异步）")
+            try:
+                # 异步非阻塞调用 LLM
+                result = await llm.generate_text_async(prompt)
+                parsed_data = await llm.save_load_json_async(result)
+                if not parsed_data:
+                    return {
+                        "success": False,
+                        "message": "JSON 解析失败或返回空对象",
+                    }
+
+                if is_precise_fill == 1:
+                    print("开始自动填充")
+                    corrector = TextCorrectorFinal()
+                    parsed_data = corrector.correct_ai_text(content, parsed_data)
+
+                line_dtos: List[LineInitDTO] = [
+                    LineInitDTO(**item) for item in parsed_data
+                ]
+                return {"success": True, "data": line_dtos}
+
+            except Exception as e:
+                print("调用 LLM 出错：", e)
+                return {"success": False, "message": f"调用 LLM 出错: {str(e)}"}
+        finally:
+            db.close()
+
+    async def add_smart_role_and_voice_async(
+        self, project, content, role_names, voice_names
+    ):
+        """异步版智能匹配角色和音色"""
+        db = SessionLocal()
+        try:
+            llm_provider_id = project.llm_provider_id
+            llm_provider_repository = LLMProviderRepository(db)
+            llm_provider = llm_provider_repository.get_by_id(llm_provider_id)
+            llm = LLMEngine(
+                llm_provider.api_key,
+                llm_provider.api_base_url,
+                project.llm_model,
+                llm_provider.custom_params,
+            )
+            prompt = get_add_smart_role_and_voice(content, role_names, voice_names)
+            # 异步非阻塞调用 LLM
+            result = await llm.generate_smart_text_async(prompt)
+            parse_data = await llm.save_load_json_async(result)
+
+            voice_repository = VoiceRepository(db)
+            voices = voice_repository.get_all(project.tts_provider_id)
+            voice_id_map = {voice.name: voice.id for voice in voices}
+
             role_repository = RoleRepository(db)
             res = []
             for item in parse_data:

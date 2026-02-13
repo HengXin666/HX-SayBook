@@ -7,7 +7,6 @@ AI 多角色多情绪小说配音平台
 import asyncio
 import json
 import logging
-from concurrent.futures import ThreadPoolExecutor
 
 import uvicorn
 from fastapi import FastAPI, Depends, WebSocket
@@ -176,15 +175,14 @@ async def startup_event():
     except Exception as e:
         logger.exception("数据库迁移失败: %s", e)
 
-    # 3) 初始化 TTS 队列
+    # 3) 初始化 TTS 队列（纯协程，无线程池）
     try:
         app.state.tts_queue = asyncio.Queue(maxsize=QUEUE_CAPACITY)
-        app.state.tts_executor = ThreadPoolExecutor(max_workers=WORKERS)
         app.state.tts_workers = [
             asyncio.create_task(tts_worker(app)) for _ in range(WORKERS)
         ]
     except Exception as e:
-        logger.exception("初始化队列/线程池失败: %s", e)
+        logger.exception("初始化队列失败: %s", e)
 
     # 4) 初始化默认数据
     db = SessionLocal()
@@ -285,9 +283,6 @@ async def startup_event():
 async def shutdown_event():
     for t in getattr(app.state, "tts_workers", []):
         t.cancel()
-    ex = getattr(app.state, "tts_executor", None)
-    if ex:
-        ex.shutdown(wait=False, cancel_futures=True)
     logger.info("HX-SayBook 后端已关闭")
 
 

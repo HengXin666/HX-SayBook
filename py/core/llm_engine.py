@@ -1,4 +1,5 @@
 # py/core/llm_engine.py
+import asyncio
 import json
 
 # py/core/llm_engine.py
@@ -6,7 +7,7 @@ import json
 import re
 import time
 import random
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
 
 from py.core.prompts import get_auto_fix_json_prompt
 
@@ -31,8 +32,10 @@ class LLMEngine:
             raise ValueError("无效的 custom_params")
         self.custom_params = custom_params
 
-        # 使用新版 OpenAI 客户端
+        # 同步客户端（保留兼容）
         self.client = OpenAI(api_key=api_key, base_url=self.base_url)
+        # 异步客户端（新增，用于协程场景）
+        self.async_client = AsyncOpenAI(api_key=api_key, base_url=self.base_url)
 
     def _extract_result_tag(self, text: str) -> str:
         """提取 <result> 标签内容"""
@@ -41,9 +44,11 @@ class LLMEngine:
             raise ValueError("Response does not contain <result>...</result> tag")
         return match.group(1).strip()
 
+    # ========== 同步方法（保留兼容） ==========
+
     def generate_text_test(self, prompt: str) -> str:
         """
-        测试：生成结果并返回（非流式）
+        测试：生成结果并返回（非流式，同步）
         """
         response = self.client.chat.completions.create(
             model=self.model_name,
@@ -55,29 +60,17 @@ class LLMEngine:
 
     def generate_text(self, prompt: str, retries: int = 3, delay: float = 1.0) -> str:
         """
-        流式生成：边生成边输出
+        同步生成文本（保留兼容）
         """
         for attempt in range(retries):
             try:
-                # 开启流式
-                # stream = self.client.chat.completions.create(
-                #     model=self.model_name,
-                #     messages=[{"role": "user", "content": prompt}],
-                #     stream=True,
-                #     timeout=3000,
-                #     **self.custom_params
-                # )
-
-                # 关闭流式，直接获取完整响应
                 response = self.client.chat.completions.create(
                     model=self.model_name,
                     messages=[{"role": "user", "content": prompt}],
-                    stream=False,  # 关键：设置为 False
+                    stream=False,
                     timeout=3000,
                     **self.custom_params,
                 )
-
-                # 直接获取完整文本
                 full_text = response.choices[0].message.content
                 return full_text
 
@@ -89,27 +82,22 @@ class LLMEngine:
                     raise e
 
     def save_load_json(self, json_str: str):
-        """解析JSON，支持自动提取<result>标签内容"""
-        # 先尝试提取 <result> 标签内容
+        """解析JSON，支持自动提取<result>标签内容（同步）"""
         try:
             json_str = self._extract_result_tag(json_str)
         except ValueError:
-            # 没有 <result> 标签，直接使用原文本
             pass
 
-        # 尝试加载json
         try:
             return json.loads(json_str)
         except json.JSONDecodeError:
-            # JSON解析失败，尝试让LLM修复
             prompt = get_auto_fix_json_prompt(json_str)
             res = self.generate_text(prompt)
-            # 递归调用，修复后的结果也可能包含 <result> 标签
             return self.save_load_json(res)
 
     def generate_smart_text(self, prompt: str) -> str:
         """
-        智能文本生成（流式）
+        智能文本生成（流式，同步）
         """
         stream = self.client.chat.completions.create(
             model=self.model_name,
@@ -118,7 +106,6 @@ class LLMEngine:
             timeout=3000,
         )
 
-        # 拼接 delta.content
         full_text = ""
         for chunk in stream:
             if chunk.choices and len(chunk.choices) > 0:
@@ -128,5 +115,79 @@ class LLMEngine:
                     print(content, end="", flush=True)
                     full_text += content
 
-        print()  # 换行
+        print()
+        return full_text
+
+    # ========== 异步方法（新增，用于协程场景） ==========
+
+    async def generate_text_test_async(self, prompt: str) -> str:
+        """
+        测试：生成结果并返回（非流式，异步非阻塞）
+        """
+        response = await self.async_client.chat.completions.create(
+            model=self.model_name,
+            messages=[{"role": "user", "content": prompt}],
+            timeout=3000,
+            **self.custom_params,
+        )
+        return response.choices[0].message.content
+
+    async def generate_text_async(
+        self, prompt: str, retries: int = 3, delay: float = 1.0
+    ) -> str:
+        """
+        异步非阻塞生成文本，带重试
+        """
+        for attempt in range(retries):
+            try:
+                response = await self.async_client.chat.completions.create(
+                    model=self.model_name,
+                    messages=[{"role": "user", "content": prompt}],
+                    stream=False,
+                    timeout=3000,
+                    **self.custom_params,
+                )
+                full_text = response.choices[0].message.content
+                return full_text
+
+            except Exception as e:
+                if attempt < retries - 1:
+                    sleep_time = delay * (2**attempt) + random.random()
+                    await asyncio.sleep(sleep_time)  # 非阻塞等待
+                else:
+                    raise e
+
+    async def save_load_json_async(self, json_str: str):
+        """解析JSON，支持自动提取<result>标签内容（异步版）"""
+        try:
+            json_str = self._extract_result_tag(json_str)
+        except ValueError:
+            pass
+
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            prompt = get_auto_fix_json_prompt(json_str)
+            res = await self.generate_text_async(prompt)
+            return await self.save_load_json_async(res)
+
+    async def generate_smart_text_async(self, prompt: str) -> str:
+        """
+        智能文本生成（流式，异步非阻塞）
+        """
+        stream = await self.async_client.chat.completions.create(
+            model=self.model_name,
+            messages=[{"role": "user", "content": prompt}],
+            stream=True,
+            timeout=3000,
+        )
+
+        full_text = ""
+        async for chunk in stream:
+            if chunk.choices and len(chunk.choices) > 0:
+                delta = chunk.choices[0].delta
+                content = delta.content if hasattr(delta, "content") else None
+                if content:
+                    full_text += content
+
         return full_text
