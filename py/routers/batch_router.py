@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import traceback
 from typing import List, Optional
 
@@ -365,9 +366,13 @@ async def _process_single_chapter_async(
             )
             return
 
-        # 逐段解析（异步非阻塞）
+        # 逐段解析（异步非阻塞），带暂停重试逻辑
         all_line_data = []
         parse_success = True
+        MAX_SEG_RETRIES = 3  # 每段最多重试次数
+
+        from py.core.llm_engine import _is_rate_limit_error
+
         for seg_idx, content in enumerate(contents):
             # 每段解析前检查取消信号
             if cancel_event.is_set():
@@ -386,69 +391,131 @@ async def _process_single_chapter_async(
                 )
                 return
 
-            await _broadcast(
-                {
-                    "event": "batch_llm_log",
-                    "project_id": project_id,
-                    "chapter_id": chapter_id,
-                    "log": f"🔄 解析第 {seg_idx + 1}/{len(contents)} 段...",
-                }
-            )
+            seg_success = False
+            for retry_idx in range(MAX_SEG_RETRIES):
+                # 重试前也检查取消信号
+                if cancel_event.is_set():
+                    done_counter["done"] += 1
+                    return
 
-            try:
-                # 使用异步非阻塞 LLM 调用
-                result = await chapter_svc.para_content_async(
-                    prompt.content,
-                    chapter_id,
-                    content,
-                    list(roles_set),
-                    emotion_names,
-                    strength_names,
-                    is_precise_fill,
+                retry_hint = f"（第 {retry_idx + 1} 次重试）" if retry_idx > 0 else ""
+                await _broadcast(
+                    {
+                        "event": "batch_llm_log",
+                        "project_id": project_id,
+                        "chapter_id": chapter_id,
+                        "log": f"🔄 解析第 {seg_idx + 1}/{len(contents)} 段...{retry_hint}",
+                    }
                 )
 
-                if not result["success"]:
-                    await _broadcast(
-                        {
-                            "event": "batch_llm_log",
-                            "project_id": project_id,
-                            "chapter_id": chapter_id,
-                            "log": f"❌ 段 {seg_idx + 1} 解析失败: {result['message']}",
-                        }
+                try:
+                    # 使用异步非阻塞 LLM 调用
+                    result = await chapter_svc.para_content_async(
+                        prompt.content,
+                        chapter_id,
+                        content,
+                        list(roles_set),
+                        emotion_names,
+                        strength_names,
+                        is_precise_fill,
                     )
-                    parse_success = False
-                    break
 
-                lines_data = result["data"]
-                for ld in lines_data:
-                    roles_set.add(ld.role_name)
-                all_line_data.extend(lines_data)
+                    if not result["success"]:
+                        error_msg = result.get("message", "未知错误")
+                        # 判断是否为请求频繁类错误，如果是则暂停后重试
+                        if (
+                            _is_rate_limit_error(Exception(error_msg))
+                            and retry_idx < MAX_SEG_RETRIES - 1
+                        ):
+                            wait_time = min(
+                                15 * (2**retry_idx), 120
+                            ) + random.uniform(1, 5)
+                            await _broadcast(
+                                {
+                                    "event": "batch_llm_log",
+                                    "project_id": project_id,
+                                    "chapter_id": chapter_id,
+                                    "log": f"⏳ 段 {seg_idx + 1} 请求频繁: {error_msg}，等待 {wait_time:.0f}s 后重试...",
+                                }
+                            )
+                            await asyncio.sleep(wait_time)
+                            continue  # 重试当前段
+                        else:
+                            await _broadcast(
+                                {
+                                    "event": "batch_llm_log",
+                                    "project_id": project_id,
+                                    "chapter_id": chapter_id,
+                                    "log": f"❌ 段 {seg_idx + 1} 解析失败: {error_msg}",
+                                }
+                            )
+                            parse_success = False
+                            break  # 跳出重试循环
 
-                await _broadcast(
-                    {
-                        "event": "batch_llm_log",
-                        "project_id": project_id,
-                        "chapter_id": chapter_id,
-                        "log": f"✅ 段 {seg_idx + 1} 解析完成，获得 {len(lines_data)} 条台词",
-                    }
-                )
+                    else:
+                        lines_data = result["data"]
+                        for ld in lines_data:
+                            roles_set.add(ld.role_name)
+                        all_line_data.extend(lines_data)
 
-            except Exception as e:
-                logger.error(f"解析失败: {e}\n{traceback.format_exc()}")
-                await _broadcast(
-                    {
-                        "event": "batch_llm_log",
-                        "project_id": project_id,
-                        "chapter_id": chapter_id,
-                        "log": f"❌ 段 {seg_idx + 1} 解析异常: {e}",
-                    }
-                )
-                parse_success = False
+                        await _broadcast(
+                            {
+                                "event": "batch_llm_log",
+                                "project_id": project_id,
+                                "chapter_id": chapter_id,
+                                "log": f"✅ 段 {seg_idx + 1} 解析完成，获得 {len(lines_data)} 条台词",
+                            }
+                        )
+                        seg_success = True
+                        break  # 解析成功，跳出重试循环
+
+                except Exception as e:
+                    logger.error(f"解析失败: {e}\n{traceback.format_exc()}")
+                    # 判断是否为请求频繁类错误
+                    if _is_rate_limit_error(e) and retry_idx < MAX_SEG_RETRIES - 1:
+                        wait_time = min(15 * (2**retry_idx), 120) + random.uniform(1, 5)
+                        await _broadcast(
+                            {
+                                "event": "batch_llm_log",
+                                "project_id": project_id,
+                                "chapter_id": chapter_id,
+                                "log": f"⏳ 段 {seg_idx + 1} 请求频繁: {e}，等待 {wait_time:.0f}s 后重试...",
+                            }
+                        )
+                        await asyncio.sleep(wait_time)
+                        continue  # 重试当前段
+                    else:
+                        await _broadcast(
+                            {
+                                "event": "batch_llm_log",
+                                "project_id": project_id,
+                                "chapter_id": chapter_id,
+                                "log": f"❌ 段 {seg_idx + 1} 解析异常: {e}",
+                            }
+                        )
+                        parse_success = False
+                        break  # 跳出重试循环
+
+            # 如果当前段所有重试都失败了，终止后续段的解析
+            if not seg_success and not parse_success:
                 break
 
         if parse_success and all_line_data:
             # 写入数据库
             try:
+                # 先清除该章节的旧台词（避免重新解析时台词重复叠加）
+                existing_lines = line_svc.get_all_lines(chapter_id)
+                if len(existing_lines) > 0:
+                    line_svc.delete_all_lines(chapter_id)
+                    await _broadcast(
+                        {
+                            "event": "batch_llm_log",
+                            "project_id": project_id,
+                            "chapter_id": chapter_id,
+                            "log": f"🗑️ 已清除章节 {chapter_id} 的 {len(existing_lines)} 条旧台词",
+                        }
+                    )
+
                 audio_path = os.path.join(
                     project.project_root_path,
                     str(project_id),

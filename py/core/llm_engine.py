@@ -12,6 +12,30 @@ from openai import OpenAI, AsyncOpenAI
 from py.core.prompts import get_auto_fix_json_prompt
 
 
+def _is_rate_limit_error(e: Exception) -> bool:
+    """判断是否为请求频繁/速率限制错误"""
+    error_str = str(e).lower()
+    rate_limit_keywords = [
+        "rate limit",
+        "rate_limit",
+        "ratelimit",
+        "too many requests",
+        "429",
+        "请求频繁",
+        "频率限制",
+        "请求过多",
+        "限流",
+        "quota exceeded",
+        "quota_exceeded",
+        "server_overloaded",
+        "overloaded",
+        "服务繁忙",
+        "capacity",
+        "throttl",
+    ]
+    return any(kw in error_str for kw in rate_limit_keywords)
+
+
 class LLMEngine:
     def __init__(
         self, api_key: str, base_url: str, model_name: str, custom_params: str
@@ -58,9 +82,9 @@ class LLMEngine:
         )
         return response.choices[0].message.content
 
-    def generate_text(self, prompt: str, retries: int = 3, delay: float = 1.0) -> str:
+    def generate_text(self, prompt: str, retries: int = 5, delay: float = 1.0) -> str:
         """
-        同步生成文本（保留兼容）
+        同步生成文本（保留兼容），遇到速率限制时使用更长退避时间
         """
         for attempt in range(retries):
             try:
@@ -76,7 +100,14 @@ class LLMEngine:
 
             except Exception as e:
                 if attempt < retries - 1:
-                    sleep_time = delay * (2**attempt) + random.random()
+                    if _is_rate_limit_error(e):
+                        # 速率限制：使用更长的退避时间（15s/30s/60s/120s）
+                        sleep_time = min(15 * (2**attempt), 120) + random.uniform(1, 5)
+                        print(
+                            f"⏳ 请求频繁，第 {attempt + 1} 次重试，等待 {sleep_time:.1f}s..."
+                        )
+                    else:
+                        sleep_time = delay * (2**attempt) + random.random()
                     time.sleep(sleep_time)
                 else:
                     raise e
@@ -133,10 +164,10 @@ class LLMEngine:
         return response.choices[0].message.content
 
     async def generate_text_async(
-        self, prompt: str, retries: int = 3, delay: float = 1.0
+        self, prompt: str, retries: int = 5, delay: float = 1.0
     ) -> str:
         """
-        异步非阻塞生成文本，带重试
+        异步非阻塞生成文本，带重试。遇到速率限制时使用更长退避时间。
         """
         for attempt in range(retries):
             try:
@@ -152,7 +183,14 @@ class LLMEngine:
 
             except Exception as e:
                 if attempt < retries - 1:
-                    sleep_time = delay * (2**attempt) + random.random()
+                    if _is_rate_limit_error(e):
+                        # 速率限制：使用更长的退避时间（15s/30s/60s/120s）
+                        sleep_time = min(15 * (2**attempt), 120) + random.uniform(1, 5)
+                        print(
+                            f"⏳ 请求频繁，第 {attempt + 1} 次重试，等待 {sleep_time:.1f}s..."
+                        )
+                    else:
+                        sleep_time = delay * (2**attempt) + random.random()
                     await asyncio.sleep(sleep_time)  # 非阻塞等待
                 else:
                     raise e

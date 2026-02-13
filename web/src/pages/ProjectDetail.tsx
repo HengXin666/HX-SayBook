@@ -1,47 +1,47 @@
 import {
-  ArrowLeftOutlined,
-  DeleteOutlined,
-  DownloadOutlined,
-  EditOutlined,
-  FileTextOutlined,
-  MergeCellsOutlined,
-  PauseCircleOutlined,
-  PlayCircleOutlined,
-  PlusOutlined,
-  ReloadOutlined,
-  RobotOutlined,
-  RocketOutlined,
-  SearchOutlined,
-  SettingOutlined,
-  SoundOutlined,
-  ThunderboltOutlined,
-  UploadOutlined
+    ArrowLeftOutlined,
+    DeleteOutlined,
+    DownloadOutlined,
+    EditOutlined,
+    FileTextOutlined,
+    MergeCellsOutlined,
+    PauseCircleOutlined,
+    PlayCircleOutlined,
+    PlusOutlined,
+    ReloadOutlined,
+    RobotOutlined,
+    RocketOutlined,
+    SearchOutlined,
+    SettingOutlined,
+    SoundOutlined,
+    ThunderboltOutlined,
+    UploadOutlined
 } from '@ant-design/icons';
 import {
-  Avatar,
-  Button,
-  Card,
-  Checkbox,
-  Col,
-  Divider,
-  Empty,
-  Form,
-  Input,
-  InputNumber,
-  Layout,
-  message,
-  Modal,
-  Popconfirm,
-  Progress,
-  Radio,
-  Row,
-  Select,
-  Space,
-  Table,
-  Tabs,
-  Tag,
-  Tooltip,
-  Typography
+    Avatar,
+    Button,
+    Card,
+    Checkbox,
+    Col,
+    Divider,
+    Empty,
+    Form,
+    Input,
+    InputNumber,
+    Layout,
+    message,
+    Modal,
+    Popconfirm,
+    Progress,
+    Radio,
+    Row,
+    Select,
+    Space,
+    Table,
+    Tabs,
+    Tag,
+    Tooltip,
+    Typography
 } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
@@ -51,6 +51,7 @@ import BatchLLMModal from '../components/BatchLLMModal';
 import BatchTTSModal from '../components/BatchTTSModal';
 import SpeedControl from '../components/SpeedControl';
 import { useChapterLazyList } from '../hooks/useChapterLazyList';
+import { usePersistedConfig } from '../hooks/usePersistedState';
 import { useWebSocket } from '../hooks/useWebSocket';
 import type { Chapter, ChapterBrief, Emotion, Line, LLMProvider, Project, Prompt, Role, Strength, TTSProvider, Voice, WSEvent } from '../types';
 
@@ -161,9 +162,14 @@ export default function ProjectDetail() {
   const [mergeDurationMinutes, setMergeDurationMinutes] = useState(30);
   const [mergeLoading, setMergeLoading] = useState(false);
   const [mergeResults, setMergeResults] = useState<{ name: string; url: string; chapters: string[]; duration?: string; subtitles?: Record<string, string> }[] | null>(null);
-  // 合并导出范围选择
-  const [mergeRangeStart, setMergeRangeStart] = useState<number>(1);
-  const [mergeRangeEnd, setMergeRangeEnd] = useState<number>(1);
+  // 合并导出范围选择（持久化）
+  const [mergeRangeConfig, updateMergeRange] = usePersistedConfig(
+    `saybook_merge_range_${id}`,
+    { rangeStart: 1, rangeEnd: 0 }
+  );
+  const mergeRangeStart = mergeRangeConfig.rangeStart;
+  const setMergeRangeStart = (v: number) => updateMergeRange('rangeStart', v);
+  const setMergeRangeEnd = (v: number) => updateMergeRange('rangeEnd', v);
   const [mergeRangeLoading, setMergeRangeLoading] = useState(false);
 
 
@@ -296,6 +302,8 @@ export default function ProjectDetail() {
 
   // 合并导出弹窗的懒加载章节列表
   const mergeLazyList = useChapterLazyList({ projectId });
+  // mergeRangeEnd 需要在 mergeLazyList 声明之后计算
+  const mergeRangeEnd = mergeRangeConfig.rangeEnd || mergeLazyList.total || 1;
 
   // 加载选中章节的完整数据（含 text_content）
   const loadChapterDetail = useCallback(async (chapterId: number) => {
@@ -823,6 +831,8 @@ export default function ProjectDetail() {
       const voiceName = voices.find((v) => v.id === voiceId)?.name;
       message.success(`已为「${role.name}」绑定音色「${voiceName}」`);
       setRoleVoiceMap((prev) => ({ ...prev, [role.id]: voiceId }));
+      // 同步更新 roles 数组中对应角色的 default_voice_id，确保界面实时刷新
+      setRoles((prev) => prev.map((r) => r.id === role.id ? { ...r, default_voice_id: voiceId } : r));
       setVoiceModalOpen(false);
     } else {
       message.error(res.message || '绑定失败');
@@ -1025,13 +1035,12 @@ export default function ProjectDetail() {
     }
   }, [mergeRangeStart, mergeRangeEnd, mergeLazyList, projectId]);
 
-  // 初始化合并范围
+  // 仅当持久化中没有保存过范围（rangeEnd 为 0）时，设置默认值
   useEffect(() => {
-    if (mergeModalOpen && mergeLazyList.total > 0) {
-      setMergeRangeStart(1);
-      setMergeRangeEnd(mergeLazyList.total);
+    if (mergeModalOpen && mergeLazyList.total > 0 && mergeRangeConfig.rangeEnd === 0) {
+      updateMergeRange('rangeEnd', mergeLazyList.total);
     }
-  }, [mergeModalOpen, mergeLazyList.total]);
+  }, [mergeModalOpen, mergeLazyList.total]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ==================== 台词表格列 ====================
   const statusType = (s: string) => {
@@ -1056,24 +1065,31 @@ export default function ProjectDetail() {
       dataIndex: 'role_id',
       key: 'role_id',
       width: 140,
-      render: (roleId: number, record: Line) => (
-        <div>
-          <Select
-            size="small"
-            value={roleId || undefined}
-            style={{ width: '100%' }}
-            placeholder="选择角色"
-            allowClear
-            showSearch
-            optionFilterProp="label"
-            options={roles.map((r) => ({ value: r.id, label: r.name }))}
-            onChange={(val) => handleUpdateLineField(record.id, 'role_id', val || null)}
-          />
-          <Tag color={getRoleVoiceName(roleId) ? 'green' : 'default'} style={{ marginTop: 4, fontSize: 11 }}>
-            {getRoleVoiceName(roleId) || '未绑定音色'}
-          </Tag>
-        </div>
-      ),
+      render: (roleId: number, record: Line) => {
+        // 构建 options：始终基于 roles 列表，并确保当前已选值一定存在（避免显示数字）
+        const baseOptions = roles.map((r) => ({ value: r.id, label: r.name }));
+        if (roleId && !baseOptions.some(o => o.value === roleId)) {
+          baseOptions.unshift({ value: roleId, label: `角色#${roleId}` });
+        }
+        return (
+          <div>
+            <Select
+              size="small"
+              value={roleId || undefined}
+              style={{ width: '100%' }}
+              placeholder="选择角色"
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              options={baseOptions}
+              onChange={(val) => handleUpdateLineField(record.id, 'role_id', val || null)}
+            />
+            <Tag color={getRoleVoiceName(roleId) ? 'green' : 'default'} style={{ marginTop: 4, fontSize: 11 }}>
+              {getRoleVoiceName(roleId) || '未绑定音色'}
+            </Tag>
+          </div>
+        );
+      },
     },
     {
       title: '台词文本',
@@ -1673,7 +1689,7 @@ export default function ProjectDetail() {
                     key: 'roles',
                     label: `角色库 (${roles.length})`,
                     children: (
-                      <div style={{ padding: '0 16px 16px' }}>
+                      <div style={{ padding: '0 16px 16px', flex: 1, minHeight: 0, overflowY: 'auto' }}>
                         {/* 工具栏 */}
                         <div style={{ display: 'flex', gap: 8, marginBottom: 12, alignItems: 'center' }}>
                           <Input

@@ -171,9 +171,17 @@ async def synthesize(req: SynthesizeRequest):
             "verbose": False,
         }
 
-        # 情绪向量优先
+        # 情绪向量优先（需要先归一化：应用偏置因子 + 总和约束）
         if req.emo_vector is not None:
-            kwargs["emo_vector"] = req.emo_vector
+            raw_vec = req.emo_vector
+            normed_vec = tts.normalize_emo_vec(list(raw_vec), apply_bias=True)
+            print(
+                f"[EMO] 原始向量: {[round(v,4) for v in raw_vec]}, 总和={sum(raw_vec):.4f}"
+            )
+            print(
+                f"[EMO] 归一化后: {[round(v,4) for v in normed_vec]}, 总和={sum(normed_vec):.4f}"
+            )
+            kwargs["emo_vector"] = normed_vec
         elif req.emo_text:
             kwargs["use_emo_text"] = True
             kwargs["emo_text"] = req.emo_text

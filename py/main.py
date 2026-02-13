@@ -217,6 +217,7 @@ async def startup_event():
         try:
             emotion_service = get_emotion_service(db)
             for name in [
+                # 8 个基础情绪 (对应 Index-TTS 8 维向量)
                 "高兴",
                 "生气",
                 "伤心",
@@ -225,6 +226,17 @@ async def startup_event():
                 "低落",
                 "惊喜",
                 "平静",
+                # 10 个复合情绪 (通过基础情绪向量组合实现)
+                "疑惑",
+                "紧张",
+                "感动",
+                "无奈",
+                "得意",
+                "嘲讽",
+                "焦虑",
+                "温柔",
+                "坚定",
+                "哀求",
             ]:
                 try:
                     emotion_service.create_emotion(EmotionEntity(name=name))

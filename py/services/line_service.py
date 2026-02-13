@@ -113,6 +113,40 @@ class LineService:
         return self.repository.delete_all_by_chapter_id(chapter_id)
 
     # 单个台词新增
+    @staticmethod
+    def _fuzzy_match_dict(
+        name: str, name_dict: dict, default_key: str = None
+    ) -> int | None:
+        """
+        模糊匹配字典中的 key：
+        1. 先精确匹配
+        2. 再 strip 后匹配
+        3. 再尝试包含关系匹配（如 LLM 返回 "生气的" 匹配 "生气"）
+        4. 都匹配不到时使用 default_key 的值
+        """
+        if not name:
+            return name_dict.get(default_key) if default_key else None
+
+        # 1. 精确匹配
+        if name in name_dict:
+            return name_dict[name]
+
+        # 2. strip 后匹配
+        stripped = name.strip()
+        if stripped in name_dict:
+            return name_dict[stripped]
+
+        # 3. 包含关系匹配：LLM 返回的名称包含字典中的 key，或反之
+        for key, val in name_dict.items():
+            if key in stripped or stripped in key:
+                return val
+
+        # 4. fallback 默认值
+        if default_key and default_key in name_dict:
+            return name_dict[default_key]
+
+        return None
+
     def add_new_line(
         self,
         line: LineCreateDTO,
@@ -130,10 +164,10 @@ class LineService:
             role = self.role_repository.create(
                 RolePO(name=line.role_name, project_id=project_id)
             )
-        # 获取情绪id
-        emotion_id = emotions_dict.get(line.emotion_name)
-        # 获取强度id
-        strength_id = strengths_dict.get(line.strength_name)
+        # 获取情绪id（模糊匹配 + fallback 到 "平静"）
+        emotion_id = self._fuzzy_match_dict(line.emotion_name, emotions_dict, "平静")
+        # 获取强度id（模糊匹配 + fallback 到 "中等"）
+        strength_id = self._fuzzy_match_dict(line.strength_name, strengths_dict, "中等")
         res = self.repository.create(
             LinePO(
                 text_content=line.text_content,

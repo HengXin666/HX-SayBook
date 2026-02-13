@@ -370,6 +370,12 @@ async def get_lines(
             )
 
     try:
+        # 先清除该章节的旧台词（避免重新解析时台词重复叠加）
+        existing_lines = line_service.get_all_lines(chapter_id)
+        if len(existing_lines) > 0:
+            line_service.delete_all_lines(chapter_id)
+            logging.info(f"已清除章节 {chapter_id} 的 {len(existing_lines)} 条旧台词")
+
         audio_path = os.path.join(
             project.project_root_path, str(project_id), str(chapter_id), "audio"
         )
@@ -465,6 +471,12 @@ async def import_lines(
         corrector = TextCorrectorFinal()
         lines_data = corrector.correct_ai_text(content, lines_data)
     lines_data = [LineInitDTO(**line) for line in lines_data]
+
+    # 先清除该章节的旧台词（避免导入时台词重复叠加）
+    existing_lines = line_service.get_all_lines(chapter_id)
+    if len(existing_lines) > 0:
+        line_service.delete_all_lines(chapter_id)
+        logging.info(f"已清除章节 {chapter_id} 的 {len(existing_lines)} 条旧台词")
 
     audio_path = os.path.join(
         project.project_root_path, str(project_id), str(chapter_id), "audio"

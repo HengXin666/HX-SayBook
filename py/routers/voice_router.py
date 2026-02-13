@@ -1,9 +1,12 @@
+import os
+import shutil
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
+from py.core.config import get_data_dir
 from py.core.response import Res
 from py.db.database import get_db
 from py.dto.tts_provider_dto import TTSProviderResponseDTO
@@ -43,6 +46,86 @@ def get_tts_provider_service(db: Session = Depends(get_db)) -> TTSProviderServic
 
 
 # ====== 静态路由放在动态路由之前，避免路径冲突 ======
+
+
+@router.post(
+    "/upload",
+    response_model=Res[VoiceResponseDTO],
+    summary="上传音色（含参考音频文件）",
+    description="通过 multipart/form-data 上传参考音频文件并创建/更新音色",
+)
+async def upload_voice(
+    name: str = Form(...),
+    tts_provider_id: int = Form(1),
+    description: str = Form(None),
+    voice_id: int = Form(None),
+    file: UploadFile = File(None),
+    voice_service: VoiceService = Depends(get_voice_service),
+):
+    """上传音色参考音频文件，支持新建和更新"""
+    try:
+        reference_path = None
+
+        # 如果有上传文件，保存到数据目录
+        if file and file.filename:
+            # 检查文件类型
+            allowed_ext = {".wav", ".mp3", ".flac", ".ogg", ".m4a"}
+            file_ext = os.path.splitext(file.filename)[1].lower()
+            if file_ext not in allowed_ext:
+                return Res(
+                    data=None,
+                    code=400,
+                    message=f"不支持的音频格式: {file_ext}，支持: {', '.join(allowed_ext)}",
+                )
+
+            # 保存到数据目录 / user_voices /
+            voices_dir = os.path.join(get_data_dir(), "user_voices")
+            os.makedirs(voices_dir, exist_ok=True)
+
+            # 使用音色名作为文件名，避免冲突
+            safe_name = name.replace("/", "_").replace("\\", "_")
+            dest_file = os.path.join(voices_dir, f"{safe_name}{file_ext}")
+
+            with open(dest_file, "wb") as f:
+                content = await file.read()
+                f.write(content)
+
+            reference_path = dest_file
+
+        # 更新已有音色
+        if voice_id is not None:
+            voice = voice_service.get_voice(voice_id)
+            if voice is None:
+                return Res(data=None, code=404, message="音色不存在")
+
+            update_data = {
+                "name": name,
+                "tts_provider_id": voice.tts_provider_id,
+                "description": description,
+            }
+            if reference_path:
+                update_data["reference_path"] = reference_path
+
+            voice_service.update_voice(voice_id, update_data)
+            updated = voice_service.get_voice(voice_id)
+            res = VoiceResponseDTO(**updated.__dict__)
+            return Res(data=res, code=200, message="更新成功")
+
+        # 创建新音色
+        entity = VoiceEntity(
+            name=name,
+            tts_provider_id=tts_provider_id,
+            reference_path=reference_path,
+            description=description,
+        )
+        result = voice_service.create_voice(entity)
+        if result is None:
+            return Res(data=None, code=400, message=f"音色 '{name}' 已存在")
+
+        res = VoiceResponseDTO(**result.__dict__)
+        return Res(data=res, code=200, message="创建成功")
+    except Exception as e:
+        return Res(data=None, code=500, message=f"上传失败: {str(e)}")
 
 
 @router.post(
@@ -154,7 +237,18 @@ def get_audio_file(path: str):
 
     if not path or not os.path.exists(path):
         raise HTTPException(status_code=404, detail=f"音频文件不存在: {path}")
-    return FileResponse(path, media_type="audio/wav")
+
+    # 根据扩展名返回正确的 media_type
+    ext = os.path.splitext(path)[1].lower()
+    media_type_map = {
+        ".wav": "audio/wav",
+        ".mp3": "audio/mpeg",
+        ".flac": "audio/flac",
+        ".ogg": "audio/ogg",
+        ".m4a": "audio/mp4",
+    }
+    media_type = media_type_map.get(ext, "audio/wav")
+    return FileResponse(path, media_type=media_type)
 
 
 @router.get(

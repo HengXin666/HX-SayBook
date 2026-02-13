@@ -3,6 +3,7 @@ import { Checkbox, InputNumber, Modal, Progress, Slider, Space, Tag, Typography,
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { batchApi, chapterApi } from '../api';
 import { useChapterLazyList } from '../hooks/useChapterLazyList';
+import { usePersistedConfig } from '../hooks/usePersistedState';
 import { useWebSocket } from '../hooks/useWebSocket';
 import type { WSEvent } from '../types';
 import LogPanel from './LogPanel';
@@ -32,10 +33,17 @@ export default function BatchTTSModal({ open, onClose, projectId, onComplete }: 
   const [overallProgress, setOverallProgress] = useState(0);
   const [overallDone, setOverallDone] = useState(0);
   const [overallTotal, setOverallTotal] = useState(0);
-  const [speed, setSpeed] = useState(1.0);
   const [chapterStatuses, setChapterStatuses] = useState<Map<number, ChapterStatus>>(new Map());
   const [currentChapterIdx, setCurrentChapterIdx] = useState(0);
   const [totalChapters, setTotalChapters] = useState(0);
+
+  // 使用持久化配置（语速、范围）
+  const [persistedConfig, updateConfig] = usePersistedConfig(
+    `saybook_batchtts_${projectId}`,
+    { speed: 1.0, rangeStart: 1, rangeEnd: 0 }
+  );
+  const speed = persistedConfig.speed;
+  const setSpeed = (v: number) => updateConfig('speed', v);
 
   // 使用懒加载 Hook
   const lazyList = useChapterLazyList({ projectId });
@@ -49,7 +57,6 @@ export default function BatchTTSModal({ open, onClose, projectId, onComplete }: 
       setOverallProgress(0);
       setOverallDone(0);
       setOverallTotal(0);
-      setSpeed(1.0);
       setCurrentChapterIdx(0);
       setTotalChapters(0);
       setChapterStatuses(new Map());
@@ -192,17 +199,18 @@ export default function BatchTTSModal({ open, onClose, projectId, onComplete }: 
     }
   }, [selectedIds, projectId, speed]);
 
-  // 范围选择
-  const [rangeStart, setRangeStart] = useState<number>(1);
-  const [rangeEnd, setRangeEnd] = useState<number>(1);
+  // 范围选择（从持久化配置中读取）
+  const rangeStart = persistedConfig.rangeStart;
+  const rangeEnd = persistedConfig.rangeEnd || lazyList.total || 1;
+  const setRangeStart = (v: number) => updateConfig('rangeStart', v);
+  const setRangeEnd = (v: number) => updateConfig('rangeEnd', v);
 
-  // 初始化范围
+  // 仅当持久化中没有保存过范围（rangeEnd 为 0）时，设置默认值
   useEffect(() => {
-    if (open && lazyList.total > 0) {
-      setRangeStart(1);
-      setRangeEnd(lazyList.total);
+    if (open && lazyList.total > 0 && persistedConfig.rangeEnd === 0) {
+      updateConfig('rangeEnd', lazyList.total);
     }
-  }, [open, lazyList.total]);
+  }, [open, lazyList.total]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSelectAll = () => {
     const ids = lazyList.chapters.map((c) => c.id);
