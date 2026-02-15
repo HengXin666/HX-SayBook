@@ -17,6 +17,7 @@ export interface Project {
   is_precise_fill: number;
   project_root_path: string | null;
   passerby_voice_pool: number[] | null;
+  language: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -187,6 +188,7 @@ export interface VoiceDebugRequest {
   emotion_name?: string;
   strength_name?: string;
   speed?: number;
+  language?: string;
 }
 
 /** 一键挂机请求 */

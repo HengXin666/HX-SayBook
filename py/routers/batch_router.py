@@ -79,6 +79,7 @@ class VoicePreviewRequest(BaseModel):
     emotion_name: str = "平静"
     strength_name: str = "中等"
     speed: float = 1.0
+    language: Optional[str] = None  # 语言: "zh"(中文) / "ja"(日语)
 
 
 class VoiceDebugRequest(BaseModel):
@@ -90,6 +91,7 @@ class VoiceDebugRequest(BaseModel):
     emotion_name: str = "平静"
     strength_name: str = "中等"
     speed: float = 1.0
+    language: Optional[str] = None  # 语言: "zh"(中文) / "ja"(日语)
 
 
 # ============================================================
@@ -934,13 +936,15 @@ async def voice_preview(req: VoicePreviewRequest, db: Session = Depends(get_db))
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None,
-            line_svc.generate_audio,
-            voice.reference_path,
-            req.tts_provider_id,
-            req.text,
-            None,
-            emo_vector,
-            preview_path,
+            lambda: line_svc.generate_audio(
+                voice.reference_path,
+                req.tts_provider_id,
+                req.text,
+                None,
+                emo_vector,
+                preview_path,
+                language=req.language,
+            ),
         )
 
         # 速度调节
@@ -993,13 +997,15 @@ async def voice_debug(req: VoiceDebugRequest, db: Session = Depends(get_db)):
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None,
-            line_svc.generate_audio,
-            voice.reference_path,
-            req.tts_provider_id,
-            req.text,
-            None,
-            emo_vector,
-            debug_path,
+            lambda: line_svc.generate_audio(
+                voice.reference_path,
+                req.tts_provider_id,
+                req.text,
+                None,
+                emo_vector,
+                debug_path,
+                language=req.language,
+            ),
         )
 
         # 速度调节

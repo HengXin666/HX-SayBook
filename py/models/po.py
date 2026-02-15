@@ -34,6 +34,8 @@ class ProjectPO(Base):
     project_root_path = Column(String(255), nullable=True)
     # 路人语音池（JSON数组，存储voice_id列表）
     passerby_voice_pool = Column(JSON, nullable=True)
+    # 语言设置（zh=中文, ja=日语）
+    language = Column(String(10), default="zh", nullable=False)
     created_at = Column(
         DateTime, default=lambda: datetime.now(timezone.utc), nullable=False
     )

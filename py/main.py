@@ -124,6 +124,7 @@ def _run_migrations():
     _add_column_if_missing("projects", "is_precise_fill", "INTEGER DEFAULT 0")
     _add_column_if_missing("projects", "project_root_path", "TEXT")
     _add_column_if_missing("projects", "passerby_voice_pool", "TEXT")
+    _add_column_if_missing("projects", "language", "TEXT DEFAULT 'zh'")
     _add_column_if_missing("roles", "description", "TEXT")
 
     # custom_params 需要特殊处理：填入默认值
@@ -193,25 +194,6 @@ async def startup_event():
             tts_service.create_default_tts_provider()
         except Exception as e:
             logger.debug("默认 TTS provider: %s", e)
-
-        # 默认音色
-        try:
-            from py.repositories.voice_repository import VoiceRepository
-            from py.repositories.multi_emotion_voice_repository import (
-                MultiEmotionVoiceRepository,
-            )
-            from py.services.voice_service import VoiceService
-
-            voice_repo = VoiceRepository(db)
-            multi_emotion_repo = MultiEmotionVoiceRepository(db)
-            voice_service = VoiceService(voice_repo, multi_emotion_repo)
-            created = voice_service.create_default_voices(tts_provider_id=1)
-            if created > 0:
-                logger.info(
-                    "已初始化 %d 个默认中文音色（含新建和补充音频路径）", created
-                )
-        except Exception as e:
-            logger.warning("默认音色初始化: %s", e)
 
         # 情绪
         try:

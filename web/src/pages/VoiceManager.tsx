@@ -124,20 +124,29 @@ export default function VoiceManager() {
     audioRef.current = audio;
     setPlayingId(voice.id);
 
-    audio.play().catch(() => {
-      message.error('播放失败，音频文件可能不存在');
-      setPlayingId(null);
-    });
-
     audio.onended = () => {
       setPlayingId(null);
       audioRef.current = null;
     };
 
     audio.onerror = () => {
+      // 仅在尚未开始播放时提示错误（避免 abort 等非真实错误重复提示）
+      if (audioRef.current === audio) {
+        message.error('播放失败，音频文件可能不存在');
+        setPlayingId(null);
+        audioRef.current = null;
+      }
+    };
+
+    audio.play().catch((err) => {
+      // AbortError 是用户快速切换/暂停导致的，不算真正的播放失败
+      if (err.name === 'AbortError') return;
+      // 如果 onerror 已经处理过了就不重复提示
+      if (audioRef.current !== audio) return;
+      message.error('播放失败，音频文件可能不存在');
       setPlayingId(null);
       audioRef.current = null;
-    };
+    });
   };
 
   const columns = [

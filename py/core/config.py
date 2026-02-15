@@ -6,15 +6,10 @@ from pathlib import Path
 
 
 def get_data_dir() -> str:
-    """获取数据存储目录，跨平台支持"""
-    if platform.system() == "Windows":
-        base = os.path.join(os.path.expanduser("~"), "HX-SayBook")
-    else:
-        # Linux / macOS 使用 XDG 规范
-        xdg = os.environ.get(
-            "XDG_DATA_HOME", os.path.join(os.path.expanduser("~"), ".local", "share")
-        )
-        base = os.path.join(xdg, "hx-saybook")
+    """获取数据存储目录，存放在项目目录下的 py/user_data/"""
+    base = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "user_data"
+    )
     os.makedirs(base, exist_ok=True)
     return base
 

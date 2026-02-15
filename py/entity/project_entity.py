@@ -20,5 +20,7 @@ class ProjectEntity:
     project_root_path: Optional[str] = None
     # 路人语音池（voice_id列表）
     passerby_voice_pool: Optional[list] = None
+    # 语言设置（zh=中文, ja=日语）
+    language: Optional[str] = "zh"
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

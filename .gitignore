@@ -2,6 +2,9 @@
 *.db
 *.sqlite3
 
+# 用户数据目录（数据库、上传音频、生成音频等）
+py/user_data/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -24,9 +27,7 @@ output/
 previews/
 debug/
 
-# 但保留默认音色资源包中的音频文件
-!py/resources/default_voices/*.wav
-!py/resources/default_voices/*.mp3
+
 
 # IDE
 .vscode/

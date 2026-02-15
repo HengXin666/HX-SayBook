@@ -21,6 +21,7 @@ class TTSEngine:
         emo_text: Optional[str] = None,
         emo_vector: Optional[List[float]] = None,
         save_path: Optional[str] = None,
+        language: Optional[str] = None,
     ) -> bytes:
         """
         调用 /v2/synthesize 接口进行语音合成
@@ -29,11 +30,15 @@ class TTSEngine:
         :param emo_text: 情绪文本（可选）
         :param emo_vector: 8维情绪向量（可选，优先级高于 emo_text）
         :param save_path: 如果指定，将保存生成的音频文件到本地
+        :param language: 语言 "zh"(中文) / "ja"(日语)，默认自动检测
         :return: 音频二进制数据
         """
         url = f"{self.base_url}/v2/synthesize"
 
         payload = {"text": text, "audio_path": filename}
+
+        if language:
+            payload["language"] = language
 
         if emo_vector is not None:
             payload["emo_vector"] = emo_vector
@@ -110,12 +115,16 @@ class TTSEngine:
         emo_text: Optional[str] = None,
         emo_vector: Optional[List[float]] = None,
         save_path: Optional[str] = None,
+        language: Optional[str] = None,
     ) -> bytes:
         """
         异步调用 /v2/synthesize 接口进行语音合成
         """
         url = f"{self.base_url}/v2/synthesize"
         payload = {"text": text, "audio_path": filename}
+
+        if language:
+            payload["language"] = language
 
         if emo_vector is not None:
             payload["emo_vector"] = emo_vector

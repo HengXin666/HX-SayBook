@@ -228,6 +228,7 @@ class LineService:
         emo_text: str,
         emo_vector: list[float],
         save_path=None,
+        language: str = None,
     ):
         #
         tts_provider = self.tts_provider_repository.get_by_id(tts_provider_id)
@@ -246,7 +247,12 @@ class LineService:
                 tts_engine.upload_audio(reference_path, reference_path)
             #     添加emo_text
             return tts_engine.synthesize(
-                content, reference_path, emo_text, emo_vector, save_path
+                content,
+                reference_path,
+                emo_text,
+                emo_vector,
+                save_path,
+                language=language,
             )
 
     async def generate_audio_async(
@@ -257,6 +263,7 @@ class LineService:
         emo_text: str,
         emo_vector: list[float],
         save_path=None,
+        language: str = None,
     ):
         """
         异步版生成音频 —— 用 asyncio.Lock + httpx 非阻塞 IO。
@@ -271,7 +278,12 @@ class LineService:
             if not exists:
                 await tts_engine.upload_audio_async(reference_path, reference_path)
             return await tts_engine.synthesize_async(
-                content, reference_path, emo_text, emo_vector, save_path
+                content,
+                reference_path,
+                emo_text,
+                emo_vector,
+                save_path,
+                language=language,
             )
 
     # 将角色role_id下所有台词的role_id都置位空

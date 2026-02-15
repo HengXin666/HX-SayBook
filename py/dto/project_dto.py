@@ -17,6 +17,8 @@ class ProjectCreateDTO(BaseModel):
     project_root_path: Optional[str] = None
     # 路人语音池
     passerby_voice_pool: Optional[List[int]] = None
+    # 语言设置（zh=中文, ja=日语）
+    language: Optional[str] = "zh"
 
 
 class ProjectResponseDTO(BaseModel):
@@ -33,6 +35,8 @@ class ProjectResponseDTO(BaseModel):
     project_root_path: Optional[str] = None
     # 路人语音池
     passerby_voice_pool: Optional[List[int]] = None
+    # 语言设置（zh=中文, ja=日语）
+    language: Optional[str] = "zh"
     created_at: datetime
     updated_at: datetime
 

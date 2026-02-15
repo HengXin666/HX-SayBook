@@ -6,7 +6,7 @@ from sqlalchemy.pool import StaticPool
 from py.core.config import *
 
 config_path = getConfigPath()
-# SQLite 数据库文件，存储在用户目录下的 SonicVale
+# SQLite 数据库文件，存储在项目目录下的 py/user_data/
 SQLALCHEMY_DATABASE_URL = f"sqlite:///{os.path.join(config_path, 'app_test.db')}"
 
 

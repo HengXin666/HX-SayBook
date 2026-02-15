@@ -139,6 +139,7 @@ export default function VoiceDebug() {
         emotion_name: values.emotion_name || '平静',
         strength_name: values.strength_name || '中等',
         speed: previewSpeed,
+        language: values.language || undefined,
       });
 
       if (res.code === 200 && res.data) {
@@ -195,6 +196,7 @@ export default function VoiceDebug() {
               emotion_name: emotionName,
               strength_name: strengthName,
               speed: spd,
+              language: values.compare_language || undefined,
             });
 
             if (res.code === 200 && res.data) {
@@ -304,7 +306,7 @@ export default function VoiceDebug() {
               <div style={{ display: 'flex', gap: 24 }}>
                 {/* 左侧：调试面板 */}
                 <Card style={{ flex: 1, background: '#1e1e2e', borderColor: '#313244' }} title="🎛️ 调试参数">
-                  <Form form={form} layout="vertical" initialValues={{ emotion_name: '平静', strength_name: '中等' }}>
+                  <Form form={form} layout="vertical" initialValues={{ emotion_name: '平静', strength_name: '中等', language: 'zh' }}>
                     <Form.Item name="text" label="文本内容" rules={[{ required: true, message: '请输入要合成的文本' }]}>
                       <TextArea rows={4} placeholder="输入想要转化为语音的文本..." maxLength={500} showCount />
                     </Form.Item>
@@ -326,11 +328,19 @@ export default function VoiceDebug() {
                       </Space>
                     </div>
 
-                    <Form.Item name="tts_provider_id" label="TTS 服务" rules={[{ required: true, message: '请选择 TTS 服务' }]}>
-                      <Select placeholder="选择 TTS 服务">
-                        {ttsProviders.map((p) => <Select.Option key={p.id} value={p.id}>{p.name} - {p.api_base_url}</Select.Option>)}
-                      </Select>
-                    </Form.Item>
+                    <div style={{ display: 'flex', gap: 16 }}>
+                      <Form.Item name="tts_provider_id" label="TTS 服务" rules={[{ required: true, message: '请选择 TTS 服务' }]} style={{ flex: 1 }}>
+                        <Select placeholder="选择 TTS 服务">
+                          {ttsProviders.map((p) => <Select.Option key={p.id} value={p.id}>{p.name} - {p.api_base_url}</Select.Option>)}
+                        </Select>
+                      </Form.Item>
+                      <Form.Item name="language" label="语言" style={{ width: 120 }}>
+                        <Select>
+                          <Select.Option value="zh">🇨🇳 中文</Select.Option>
+                          <Select.Option value="ja">🇯🇵 日语</Select.Option>
+                        </Select>
+                      </Form.Item>
+                    </div>
 
                     <Form.Item name="voice_id" label="音色" rules={[{ required: true, message: '请选择音色' }]}>
                       <Select placeholder="选择音色" showSearch optionFilterProp="children">
@@ -427,7 +437,7 @@ export default function VoiceDebug() {
                   <Text type="secondary" style={{ display: 'block', marginBottom: 16, fontSize: 12 }}>
                     选择同一段文本 + 多个音色/速度组合，一次性生成多条音频进行对比
                   </Text>
-                  <Form form={compareForm} layout="vertical" initialValues={{ compare_emotion: '平静', compare_strength: '中等', compare_speeds: [1.0] }}>
+                  <Form form={compareForm} layout="vertical" initialValues={{ compare_emotion: '平静', compare_strength: '中等', compare_speeds: [1.0], compare_language: 'zh' }}>
                     <Form.Item name="compare_text" label="对比文本" rules={[{ required: true, message: '请输入文本' }]}>
                       <TextArea rows={3} placeholder="输入用于对比的文本..." maxLength={500} showCount />
                     </Form.Item>
@@ -445,11 +455,19 @@ export default function VoiceDebug() {
                       </Space>
                     </div>
 
-                    <Form.Item name="compare_tts_provider_id" label="TTS 服务" rules={[{ required: true, message: '请选择' }]}>
-                      <Select placeholder="选择 TTS 服务">
-                        {ttsProviders.map((p) => <Select.Option key={p.id} value={p.id}>{p.name}</Select.Option>)}
-                      </Select>
-                    </Form.Item>
+                    <div style={{ display: 'flex', gap: 16 }}>
+                      <Form.Item name="compare_tts_provider_id" label="TTS 服务" rules={[{ required: true, message: '请选择' }]} style={{ flex: 1 }}>
+                        <Select placeholder="选择 TTS 服务">
+                          {ttsProviders.map((p) => <Select.Option key={p.id} value={p.id}>{p.name}</Select.Option>)}
+                        </Select>
+                      </Form.Item>
+                      <Form.Item name="compare_language" label="语言" style={{ width: 120 }}>
+                        <Select>
+                          <Select.Option value="zh">🇨🇳 中文</Select.Option>
+                          <Select.Option value="ja">🇯🇵 日语</Select.Option>
+                        </Select>
+                      </Form.Item>
+                    </div>
 
                     <Form.Item name="voice_ids" label="音色（可多选）" rules={[{ required: true, message: '请至少选择一个音色' }]}>
                       <Select mode="multiple" placeholder="选择要对比的音色" showSearch optionFilterProp="children" maxTagCount={5}>

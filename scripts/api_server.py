@@ -14,10 +14,12 @@ Index-TTS API Server
 """
 
 import argparse
+import gc
 import hashlib
 import os
 import sys
 import tempfile
+import threading
 import time
 import warnings
 
@@ -35,16 +37,26 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from typing import List, Optional
 
+
 # ============================================================
 # 命令行参数
 # ============================================================
 parser = argparse.ArgumentParser(description="Index-TTS API Server")
 parser.add_argument("--host", type=str, default="0.0.0.0", help="监听地址")
 parser.add_argument("--port", type=int, default=8000, help="监听端口")
-parser.add_argument("--model_dir", type=str, default="./checkpoints", help="模型目录")
+parser.add_argument(
+    "--model_dir", type=str, default="./checkpoints", help="模型目录（中文模型）"
+)
+parser.add_argument(
+    "--ja_model_dir", type=str, default=None, help="日语模型目录（默认为 model_dir/ja）"
+)
 parser.add_argument("--fp16", action="store_true", default=False, help="使用 FP16 推理")
 parser.add_argument("--device", type=str, default=None, help="推理设备 (cuda:0 / cpu)")
 args = parser.parse_args()
+
+# 日语模型目录：默认在 model_dir/ja 下
+if args.ja_model_dir is None:
+    args.ja_model_dir = os.path.join(args.model_dir, "ja")
 
 # ============================================================
 # 全局变量
@@ -58,13 +70,14 @@ OUTPUTS_DIR = os.path.join(current_dir, "outputs", "api")
 os.makedirs(OUTPUTS_DIR, exist_ok=True)
 
 # ============================================================
-# 初始化 TTS 模型
+# 初始化 TTS 模型（切换模式：同一时间只加载一个语言的模型）
 # ============================================================
 print("=" * 50)
 print("  Index-TTS API Server 启动中...")
+print("  模式: 单模型切换（节省显存）")
 print("=" * 50)
 
-# 检查模型文件
+# 检查中文模型文件
 required_files = [
     "bpe.model",
     "gpt.pth",
@@ -79,16 +92,95 @@ for f in required_files:
         print(f"   请参考 https://github.com/index-tts/index-tts#模型下载 下载模型")
         sys.exit(1)
 
+# 检查日语模型文件是否存在
+ja_model_dir = args.ja_model_dir
+ja_required_files = ["bpe.model", "gpt.pth", "config.yaml"]
+ja_available = all(
+    os.path.exists(os.path.join(ja_model_dir, f)) for f in ja_required_files
+)
+if ja_available:
+    print(f"✅ 日语模型文件就绪 ({ja_model_dir})")
+else:
+    print(f"⚠️  未找到日语模型文件 ({ja_model_dir})，日语合成功能不可用")
+    print(f"   请从 https://huggingface.co/Jmica/IndexTTS-2-Japanese 下载模型")
+
 from indextts.infer_v2 import IndexTTS2
 
-tts = IndexTTS2(
-    cfg_path=os.path.join(args.model_dir, "config.yaml"),
-    model_dir=args.model_dir,
-    use_fp16=args.fp16,
-    device=args.device,
-)
 
-print("✅ 模型加载完成")
+class TTSModelManager:
+    """TTS 模型管理器：同一时间只加载一个语言的模型，按需切换以节省 GPU 显存"""
+
+    def __init__(self):
+        self._tts = None  # 当前加载的 IndexTTS2 实例
+        self._current_lang = None  # 当前加载的语言: "zh" / "ja"
+        self._lock = threading.Lock()  # 线程安全锁
+
+    def _unload(self):
+        """卸载当前模型，释放 GPU 显存"""
+        if self._tts is not None:
+            lang_name = "中文" if self._current_lang == "zh" else "日语"
+            print(f"🔄 卸载{lang_name}模型...")
+            del self._tts
+            self._tts = None
+            self._current_lang = None
+            gc.collect()
+            try:
+                import torch
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except ImportError:
+                pass
+            print(f"   已释放显存")
+
+    def _load(self, lang: str):
+        """加载指定语言的模型"""
+        if lang == "ja":
+            model_dir = ja_model_dir
+            cfg_path = os.path.join(ja_model_dir, "config.yaml")
+            lang_name = "日语"
+        else:
+            model_dir = args.model_dir
+            cfg_path = os.path.join(args.model_dir, "config.yaml")
+            lang_name = "中文"
+
+        print(f"📦 加载{lang_name}模型...")
+        self._tts = IndexTTS2(
+            cfg_path=cfg_path,
+            model_dir=model_dir,
+            use_fp16=args.fp16,
+            device=args.device,
+        )
+        self._current_lang = lang
+        print(f"✅ {lang_name}模型加载完成")
+
+    def get_tts(self, lang: str) -> IndexTTS2:
+        """
+        获取指定语言的 TTS 实例。
+        如果当前已加载相同语言的模型则直接返回；否则卸载旧模型并加载新模型。
+        """
+        with self._lock:
+            if self._current_lang == lang and self._tts is not None:
+                return self._tts
+
+            # 需要切换模型
+            if self._tts is not None:
+                self._unload()
+            self._load(lang)
+            return self._tts
+
+    @property
+    def current_lang(self):
+        return self._current_lang
+
+
+# 初始化模型管理器，启动时默认加载中文模型
+tts_manager = TTSModelManager()
+print("\n📦 初始加载中文模型...")
+tts_manager.get_tts("zh")
+
+# 兼容旧代码
+tts = tts_manager
 
 # ============================================================
 # FastAPI 应用
@@ -144,6 +236,7 @@ class SynthesizeRequest(BaseModel):
     audio_path: str  # 参考音频文件名（上传时的原始路径或文件名）
     emo_text: Optional[str] = None
     emo_vector: Optional[List[float]] = None
+    language: Optional[str] = None  # 语言: "zh"(中文) / "ja"(日语), 默认自动检测
 
 
 @app.post("/v2/synthesize")
@@ -163,6 +256,25 @@ async def synthesize(req: SynthesizeRequest):
     output_path = os.path.join(OUTPUTS_DIR, output_name)
 
     try:
+        # 根据语言选择/切换模型
+        language = req.language or "zh"
+        if language == "ja" and not ja_available:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "日语模型文件不存在，请先下载日语模型到 checkpoints/ja 目录"
+                },
+            )
+        if language not in ("zh", "ja"):
+            print(f"[LANG] 未知语言 '{language}'，回退到中文模型")
+            language = "zh"
+
+        # 获取当前语言的 TTS 实例（如需切换会自动卸载旧模型 + 加载新模型）
+        if language != tts_manager.current_lang:
+            lang_name = "日语" if language == "ja" else "中文"
+            print(f"[LANG] 切换到{lang_name}模型...")
+        active_tts = tts_manager.get_tts(language)
+
         # 构建推理参数
         kwargs = {
             "spk_audio_prompt": prompt_path,
@@ -171,10 +283,14 @@ async def synthesize(req: SynthesizeRequest):
             "verbose": False,
         }
 
+        # 传递语言参数给 TextNormalizer（日语模式跳过中文 TN）
+        if language == "ja":
+            kwargs["language"] = "ja"
+
         # 情绪向量优先（需要先归一化：应用偏置因子 + 总和约束）
         if req.emo_vector is not None:
             raw_vec = req.emo_vector
-            normed_vec = tts.normalize_emo_vec(list(raw_vec), apply_bias=True)
+            normed_vec = active_tts.normalize_emo_vec(list(raw_vec), apply_bias=True)
             print(
                 f"[EMO] 原始向量: {[round(v,4) for v in raw_vec]}, 总和={sum(raw_vec):.4f}"
             )
@@ -186,7 +302,7 @@ async def synthesize(req: SynthesizeRequest):
             kwargs["use_emo_text"] = True
             kwargs["emo_text"] = req.emo_text
 
-        tts.infer(**kwargs)
+        active_tts.infer(**kwargs)
 
         if not os.path.isfile(output_path):
             return JSONResponse(
@@ -256,7 +372,12 @@ async def upload_audio(
 # ============================================================
 if __name__ == "__main__":
     print(f"\n🚀 Index-TTS API Server 运行在 http://{args.host}:{args.port}")
-    print(f"   模型目录: {args.model_dir}")
+    print(f"   模式: 单模型切换（节省显存）")
+    print(f"   中文模型目录: {args.model_dir}")
+    print(
+        f"   日语模型目录: {args.ja_model_dir} ({'✅ 可用' if ja_available else '❌ 不可用'})"
+    )
+    print(f"   当前加载: {tts_manager.current_lang}")
     print(f"   参考音频目录: {PROMPTS_DIR}")
     print()
     uvicorn.run(app, host=args.host, port=args.port)

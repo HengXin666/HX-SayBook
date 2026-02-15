@@ -846,7 +846,7 @@ export default function ProjectDetail() {
     if (llmRes.data) setLlmProviders(llmRes.data);
     if (ttsRes.data) setTtsProviders(ttsRes.data);
     if (promptRes.data) setPrompts(promptRes.data);
-    settingsForm.setFieldsValue({
+    settingsForm.setFieldsValues({
       name: project.name,
       description: project.description,
       llm_provider_id: project.llm_provider_id,
@@ -855,8 +855,8 @@ export default function ProjectDetail() {
       prompt_id: project.prompt_id,
       is_precise_fill: project.is_precise_fill,
       passerby_voice_pool: project.passerby_voice_pool || [],
-    });
-    setSettingsModalOpen(true);
+      language: project.language || 'zh',
+    });    setSettingsModalOpen(true);
   };
 
   const handleSaveSettings = async () => {
@@ -2275,6 +2275,9 @@ export default function ProjectDetail() {
           </Form.Item>
           <Form.Item name="tts_provider_id" label="TTS 引擎">
             <Select allowClear options={ttsProviders.map((p) => ({ value: p.id, label: p.name }))} />
+          </Form.Item>
+          <Form.Item name="language" label="语言" tooltip="指定文本语言，影响 TTS 文本预处理方式">
+            <Select options={[{ value: 'zh', label: '🇨🇳 中文' }, { value: 'ja', label: '🇯🇵 日语' }]} />
           </Form.Item>
           <Form.Item name="prompt_id" label="提示词模板">
             <Select allowClear options={prompts.map((p) => ({ value: p.id, label: p.name }))} />

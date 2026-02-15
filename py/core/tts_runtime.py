@@ -150,6 +150,9 @@ async def tts_worker(app: FastAPI):
 
             project = project_service.get_project(project_id)
 
+            # 获取项目语言设置
+            project_language = getattr(project, "language", None)
+
             # 纯协程调用，无需线程池
             await asyncio.wait_for(
                 line_service.generate_audio_async(
@@ -159,6 +162,7 @@ async def tts_worker(app: FastAPI):
                     emo_text,
                     emo_vector,
                     dto.audio_path,
+                    language=project_language,
                 ),
                 timeout=TTS_TIMEOUT_SECONDS,
             )
