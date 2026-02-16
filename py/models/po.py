@@ -4,6 +4,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    Float,
     Enum,
     ForeignKey,
     DateTime,
@@ -192,6 +193,9 @@ class LinePO(Base):
     # 输出资源
     audio_path = Column(String(500), nullable=True)
     subtitle_path = Column(String(500), nullable=True)
+
+    # 语速 (0.5~2.0, 默认1.0)
+    speed = Column(Float, default=1.0, nullable=False, server_default="1.0")
 
     # 间隔停留时间（秒）
     # wait_time = Column(Integer, default=0, nullable=True)

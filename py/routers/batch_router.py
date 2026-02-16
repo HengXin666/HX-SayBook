@@ -68,6 +68,7 @@ class BatchTTSRequest(BaseModel):
     project_id: int
     chapter_ids: List[int]
     speed: float = 1.0  # 全局速度调节
+    skip_done: bool = False  # 跳过已配音(status=done且音频文件存在)的台词
 
 
 class VoicePreviewRequest(BaseModel):
@@ -122,6 +123,9 @@ def _get_services(db: Session):
 
 # 存储运行中的批量LLM任务: project_id -> {"cancel_event": asyncio.Event, "task": asyncio.Task}
 _batch_llm_tasks: dict = {}
+
+# 存储运行中的批量TTS任务: project_id -> {"cancel_event": asyncio.Event, "task": asyncio.Task}
+_batch_tts_tasks: dict = {}
 
 
 @router.post(
@@ -678,37 +682,110 @@ async def _do_batch_llm(
     "/tts-generate",
     response_model=Res,
     summary="批量TTS配音",
-    description="选择章节范围，批量进行TTS配音，通过WebSocket推送日志和进度",
+    description="选择章节范围，批量进行TTS配音，支持跳过已配音台词和取消，通过WebSocket推送日志和进度",
 )
 async def batch_tts_generate(req: BatchTTSRequest):
     """批量配音多个章节，通过 WS 推送实时进度"""
-    from starlette.requests import Request
+    # 如果该项目已有运行中的TTS任务，拒绝重复启动
+    if req.project_id in _batch_tts_tasks:
+        return Res(code=400, message="该项目已有批量TTS任务在运行中，请先取消后再重试")
 
-    # 获取 app 实例以访问 tts_queue
-    # 这里直接启动异步任务
+    cancel_event = asyncio.Event()
     task = asyncio.create_task(
-        _do_batch_tts(req.project_id, req.chapter_ids, req.speed)
+        _do_batch_tts(
+            req.project_id, req.chapter_ids, req.speed, cancel_event, req.skip_done
+        )
     )
+    _batch_tts_tasks[req.project_id] = {"cancel_event": cancel_event, "task": task}
+
+    # 任务结束后自动清理
+    def _cleanup(fut):
+        _batch_tts_tasks.pop(req.project_id, None)
+
+    task.add_done_callback(_cleanup)
+
     return Res(
         code=200,
         message="批量TTS配音任务已启动",
-        data={"chapter_count": len(req.chapter_ids)},
+        data={"chapter_count": len(req.chapter_ids), "skip_done": req.skip_done},
     )
 
 
-async def _do_batch_tts(project_id: int, chapter_ids: List[int], speed: float = 1.0):
-    """后台执行批量TTS配音"""
+@router.get(
+    "/tts-status",
+    response_model=Res,
+    summary="查询批量TTS任务状态",
+    description="查询指定项目是否有正在运行的批量TTS任务",
+)
+async def batch_tts_status(project_id: int):
+    """查询批量TTS任务是否正在运行"""
+    task_info = _batch_tts_tasks.get(project_id)
+    if not task_info:
+        return Res(code=200, message="无运行中的任务", data={"running": False})
+
+    return Res(
+        code=200,
+        message="任务运行中",
+        data={
+            "running": True,
+            "cancelled": task_info["cancel_event"].is_set(),
+        },
+    )
+
+
+@router.post(
+    "/tts-cancel",
+    response_model=Res,
+    summary="取消批量TTS配音",
+    description="取消正在运行的批量TTS配音任务",
+)
+async def batch_tts_cancel(project_id: int):
+    """取消正在运行的批量TTS任务"""
+    task_info = _batch_tts_tasks.get(project_id)
+    if not task_info:
+        return Res(code=404, message="没有正在运行的批量TTS任务")
+
+    task_info["cancel_event"].set()
+    logger.info(f"批量TTS任务取消信号已发送: project_id={project_id}")
+    return Res(code=200, message="取消信号已发送，任务将在当前台词处理完成后停止")
+
+
+async def _do_batch_tts(
+    project_id: int,
+    chapter_ids: List[int],
+    speed: float = 1.0,
+    cancel_event: asyncio.Event = None,
+    skip_done: bool = False,
+):
+    """后台执行批量TTS配音（支持取消 + 跳过已配音 + 音色预上传）"""
+    if cancel_event is None:
+        cancel_event = asyncio.Event()
+
     total_chapters = len(chapter_ids)
     total_lines = 0
     done_lines = 0
+    skipped_lines = 0
 
-    # 先统计总台词数
+    # 先统计总台词数 + 收集所有需要的音色路径用于预上传
     db = SessionLocal()
+    reference_paths_set: set = set()  # 收集所有需要的参考音频路径
+    tts_provider_id = None
     try:
         services = _get_services(db)
+        project = services["project"].get_project(project_id)
+        tts_provider_id = project.tts_provider_id
+
         for cid in chapter_ids:
             lines = services["line"].get_all_lines(cid)
-            total_lines += len([l for l in lines if l.role_id is not None])
+            for l in lines:
+                if l.role_id is not None:
+                    total_lines += 1
+                    # 收集音色路径
+                    role = services["role"].get_role(l.role_id)
+                    if role and role.default_voice_id:
+                        voice = services["voice"].get_voice(role.default_voice_id)
+                        if voice and voice.reference_path:
+                            reference_paths_set.add(voice.reference_path)
     finally:
         db.close()
 
@@ -718,11 +795,54 @@ async def _do_batch_tts(project_id: int, chapter_ids: List[int], speed: float = 
             "project_id": project_id,
             "total_chapters": total_chapters,
             "total_lines": total_lines,
-            "log": f"🎙️ 开始批量配音：共 {total_chapters} 章, {total_lines} 条台词",
+            "log": f"🎙️ 开始批量配音：共 {total_chapters} 章, {total_lines} 条台词"
+            + ("（跳过已配音）" if skip_done else ""),
         }
     )
 
+    # ===== 音色预上传：一次性检查并上传所有涉及的音色 =====
+    if reference_paths_set and tts_provider_id:
+        await manager.broadcast(
+            {
+                "event": "batch_tts_log",
+                "project_id": project_id,
+                "log": f"📤 预上传音色中... 共 {len(reference_paths_set)} 个音色",
+            }
+        )
+        db = SessionLocal()
+        try:
+            services = _get_services(db)
+            line_svc = services["line"]
+            for ref_path in reference_paths_set:
+                if cancel_event.is_set():
+                    break
+                try:
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(
+                        None,
+                        line_svc.ensure_audio_uploaded,
+                        ref_path,
+                        tts_provider_id,
+                    )
+                except Exception as e:
+                    logger.warning(f"音色预上传失败: {ref_path}, {e}")
+        finally:
+            db.close()
+
+        if not cancel_event.is_set():
+            await manager.broadcast(
+                {
+                    "event": "batch_tts_log",
+                    "project_id": project_id,
+                    "log": f"✅ 音色预上传完成，共 {len(reference_paths_set)} 个音色",
+                }
+            )
+
     for ch_idx, chapter_id in enumerate(chapter_ids):
+        # 检查取消信号
+        if cancel_event.is_set():
+            break
+
         db = SessionLocal()
         try:
             services = _get_services(db)
@@ -732,7 +852,6 @@ async def _do_batch_tts(project_id: int, chapter_ids: List[int], speed: float = 
             emotion_svc = services["emotion"]
             strength_svc = services["strength"]
             project_svc = services["project"]
-            multi_emotion_svc = services["multi_emotion"]
 
             project = project_svc.get_project(project_id)
             lines = line_svc.get_all_lines(chapter_id)
@@ -753,7 +872,39 @@ async def _do_batch_tts(project_id: int, chapter_ids: List[int], speed: float = 
             )
 
             for line_idx, line in enumerate(valid_lines):
+                # 每条台词前检查取消信号
+                if cancel_event.is_set():
+                    break
+
                 try:
+                    # 跳过已配音的台词（status=done 且音频文件存在）
+                    if (
+                        skip_done
+                        and line.status == "done"
+                        and line.audio_path
+                        and os.path.exists(line.audio_path)
+                    ):
+                        done_lines += 1
+                        skipped_lines += 1
+                        await manager.broadcast(
+                            {
+                                "event": "batch_tts_line_progress",
+                                "project_id": project_id,
+                                "chapter_id": chapter_id,
+                                "line_id": line.id,
+                                "line_index": line_idx + 1,
+                                "line_total": len(valid_lines),
+                                "overall_done": done_lines,
+                                "overall_total": total_lines,
+                                "progress": round(
+                                    (done_lines / max(total_lines, 1)) * 100
+                                ),
+                                "status": "skipped",
+                                "log": f"⏭️ 台词 {line.id} 已配音，跳过",
+                            }
+                        )
+                        continue
+
                     role = role_svc.get_role(line.role_id)
                     if not role or not role.default_voice_id:
                         await manager.broadcast(
@@ -803,11 +954,11 @@ async def _do_batch_tts(project_id: int, chapter_ids: List[int], speed: float = 
                         }
                     )
 
-                    # 执行 TTS
+                    # 执行 TTS（使用 no_check 版本，音色已预上传）
                     loop = asyncio.get_running_loop()
                     await loop.run_in_executor(
                         None,
-                        line_svc.generate_audio,
+                        line_svc.generate_audio_no_check,
                         reference_path,
                         project.tts_provider_id,
                         line.text_content,
@@ -815,6 +966,9 @@ async def _do_batch_tts(project_id: int, chapter_ids: List[int], speed: float = 
                         emo_vector,
                         line.audio_path,
                     )
+
+                    # TTS 重新生成后，清理旧的原始音频备份
+                    line_svc._clean_orig_backup(line.audio_path)
 
                     # 速度调节
                     if (
@@ -824,7 +978,7 @@ async def _do_batch_tts(project_id: int, chapter_ids: List[int], speed: float = 
                     ):
                         line_svc.process_audio_ffmpeg(line.audio_path, speed=speed)
 
-                    line_svc.update_line(line.id, {"status": "done"})
+                    line_svc.update_line(line.id, {"status": "done", "speed": speed})
                     done_lines += 1
 
                     await manager.broadcast(
@@ -888,16 +1042,31 @@ async def _do_batch_tts(project_id: int, chapter_ids: List[int], speed: float = 
         finally:
             db.close()
 
-    # 全部完成
-    await manager.broadcast(
-        {
-            "event": "batch_tts_complete",
-            "project_id": project_id,
-            "total_chapters": total_chapters,
-            "total_lines": total_lines,
-            "log": f"🎉 批量配音全部完成！共处理 {total_chapters} 章, {done_lines} 条台词",
-        }
-    )
+    # 全部完成或被取消
+    if cancel_event.is_set():
+        await manager.broadcast(
+            {
+                "event": "batch_tts_complete",
+                "project_id": project_id,
+                "total_chapters": total_chapters,
+                "total_lines": total_lines,
+                "cancelled": True,
+                "log": f"⏹️ 批量配音已取消！已完成 {done_lines}/{total_lines} 条台词"
+                + (f"（跳过 {skipped_lines} 条已配音）" if skipped_lines > 0 else ""),
+            }
+        )
+    else:
+        await manager.broadcast(
+            {
+                "event": "batch_tts_complete",
+                "project_id": project_id,
+                "total_chapters": total_chapters,
+                "total_lines": total_lines,
+                "cancelled": False,
+                "log": f"🎉 批量配音全部完成！共处理 {total_chapters} 章, {done_lines} 条台词"
+                + (f"（跳过 {skipped_lines} 条已配音）" if skipped_lines > 0 else ""),
+            }
+        )
 
 
 # ============================================================
@@ -1063,11 +1232,17 @@ async def adjust_speed(req: SpeedAdjustRequest, db: Session = Depends(get_db)):
             return Res(code=404, message="台词音频不存在")
 
         services["line"].process_audio_ffmpeg(line.audio_path, speed=req.speed)
+        # 保存 speed 到数据库
+        services["line"].update_line(line.id, {"speed": req.speed})
 
         relative_path = os.path.relpath(line.audio_path, get_data_dir())
         audio_url = f"/static/audio/{relative_path}"
 
-        return Res(code=200, message="速度调节完成", data={"audio_url": audio_url})
+        return Res(
+            code=200,
+            message="速度调节完成",
+            data={"audio_url": audio_url, "speed": req.speed},
+        )
     except Exception as e:
         return Res(code=500, message=f"速度调节失败: {e}")
 
@@ -1076,25 +1251,36 @@ async def adjust_speed(req: SpeedAdjustRequest, db: Session = Depends(get_db)):
     "/batch-adjust-speed",
     response_model=Res,
     summary="批量速度调节",
-    description="调整整个章节所有台词的语速",
+    description="调整整个章节所有台词的语速（保护已单独设置过语速的台词）",
 )
 async def batch_adjust_speed(
     req: BatchSpeedAdjustRequest, db: Session = Depends(get_db)
 ):
-    """批量调整章节内所有台词的语速"""
+    """批量调整章节内所有台词的语速（只影响未单独设置过语速的台词，即 speed=1.0）"""
     try:
         services = _get_services(db)
         lines = services["line"].get_all_lines(req.chapter_id)
         adjusted = 0
+        skipped = 0
         for line in lines:
             if line.audio_path and os.path.exists(line.audio_path):
+                # 保护已单独设置过语速的台词：只影响 speed 为默认值 1.0 的台词
+                current_speed = getattr(line, "speed", None) or 1.0
+                if abs(current_speed - 1.0) > 1e-6:
+                    skipped += 1
+                    continue
                 services["line"].process_audio_ffmpeg(line.audio_path, speed=req.speed)
+                services["line"].update_line(line.id, {"speed": req.speed})
                 adjusted += 1
+
+        msg = f"批量速度调节完成，调整了 {adjusted} 条台词"
+        if skipped > 0:
+            msg += f"，跳过 {skipped} 条已单独设置语速的台词"
 
         return Res(
             code=200,
-            message=f"批量速度调节完成，调整了 {adjusted} 条台词",
-            data={"adjusted": adjusted},
+            message=msg,
+            data={"adjusted": adjusted, "skipped": skipped, "speed": req.speed},
         )
     except Exception as e:
         return Res(code=500, message=f"批量速度调节失败: {e}")
@@ -1444,10 +1630,13 @@ async def _autopilot_tts_single_chapter(
                     line.audio_path,
                 )
 
+                # TTS 重新生成后，清理旧的原始音频备份
+                line_svc._clean_orig_backup(line.audio_path)
+
                 if speed != 1.0 and line.audio_path and os.path.exists(line.audio_path):
                     line_svc.process_audio_ffmpeg(line.audio_path, speed=speed)
 
-                line_svc.update_line(line.id, {"status": "done"})
+                line_svc.update_line(line.id, {"status": "done", "speed": speed})
                 done_count += 1
 
             except Exception as e:

@@ -283,10 +283,6 @@ async def synthesize(req: SynthesizeRequest):
             "verbose": False,
         }
 
-        # 传递语言参数给 TextNormalizer（日语模式跳过中文 TN）
-        if language == "ja":
-            kwargs["language"] = "ja"
-
         # 情绪向量优先（需要先归一化：应用偏置因子 + 总和约束）
         if req.emo_vector is not None:
             raw_vec = req.emo_vector

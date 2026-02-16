@@ -50,8 +50,11 @@ class LLMEngine:
         self.base_url = base_url.rstrip("/")  # 去掉末尾斜杠
         self.model_name = model_name
 
-        # custom_params从string转为dict
-        custom_params = json.loads(custom_params)
+        # custom_params从string转为dict, 兼容None和空字符串
+        if not custom_params:
+            custom_params = {}
+        else:
+            custom_params = json.loads(custom_params)
         if not isinstance(custom_params, dict):
             raise ValueError("无效的 custom_params")
         self.custom_params = custom_params

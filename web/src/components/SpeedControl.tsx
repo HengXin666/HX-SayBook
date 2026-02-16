@@ -67,7 +67,7 @@ export default function SpeedControl({ lineId, chapterId, currentSpeed = 1.0, on
         onClick={handleOpen}
         title={type === 'chapter' ? '批量调节语速' : '调节语速'}
       >
-        {type === 'chapter' ? '全局语速' : `${currentSpeed}x`}
+        {type === 'chapter' ? `全局语速 ${currentSpeed}x` : `${currentSpeed}x`}
       </Button>
 
       <Modal
@@ -93,11 +93,13 @@ export default function SpeedControl({ lineId, chapterId, currentSpeed = 1.0, on
         <div style={{ padding: '16px 0' }}>
           <Text style={{ color: '#cdd6f4', display: 'block', marginBottom: 8 }}>
             {type === 'chapter'
-              ? '调整本章节所有已生成音频的语速（会直接修改音频文件）'
+              ? '调整本章节未单独设置过语速的台词（已单独调速的台词不受影响）'
               : '调整这条台词的语速（会直接修改音频文件）'}
           </Text>
           <Text type="secondary" style={{ display: 'block', marginBottom: 16, fontSize: 12 }}>
-            范围: 0.5x (慢速) ~ 2.0x (快速)，1.0x 为原速
+            {type === 'chapter'
+              ? '范围: 0.5x ~ 2.0x，仅影响语速为 1.0x（默认）的台词'
+              : '范围: 0.5x (慢速) ~ 2.0x (快速)，1.0x 为原速'}
           </Text>
 
           <div style={{ padding: '0 16px' }}>

@@ -255,6 +255,44 @@ download_via_hf_mirror() {
     HF_ENDPOINT="https://hf-mirror.com" download_via_huggingface "$model_dir"
 }
 
+# 通过 HuggingFace 下载日语模型
+download_ja_via_huggingface() {
+    local model_dir="$1"
+    echo "   🌐 使用 HuggingFace 下载日语模型..."
+    ensure_download_tool "huggingface"
+
+    if [[ -n "$HF_ENDPOINT" ]]; then
+        echo "   🔗 使用 HuggingFace 镜像: $HF_ENDPOINT"
+    fi
+
+    local hf_cmd=""
+    for bin_dir in "$INSTALL_DIR/.venv/bin" "$INSTALL_DIR/venv/bin"; do
+        if [[ -f "$bin_dir/hf" ]]; then
+            hf_cmd="$bin_dir/hf"
+            break
+        elif [[ -f "$bin_dir/huggingface-cli" ]]; then
+            hf_cmd="$bin_dir/huggingface-cli"
+            break
+        fi
+    done
+
+    if [[ -z "$hf_cmd" ]]; then
+        echo "   ❌ 找不到 hf 或 huggingface-cli 命令"
+        return 1
+    fi
+
+    "$hf_cmd" download Jmica/IndexTTS-2-Japanese \
+        --local-dir "$model_dir" \
+        --exclude "*.md" "*.txt" "*.png" "*.mp4"
+}
+
+# 通过 HuggingFace 镜像站下载日语模型（国内备选）
+download_ja_via_hf_mirror() {
+    local model_dir="$1"
+    echo "   🔗 使用 HuggingFace 镜像站（hf-mirror.com）下载日语模型..."
+    HF_ENDPOINT="https://hf-mirror.com" download_ja_via_huggingface "$model_dir"
+}
+
 # 下载模型
 download_models() {
     echo ""
@@ -369,7 +407,102 @@ download_models() {
         print_manual_download_help "$MODEL_DIR"
     else
         echo ""
-        echo "   🎉 所有模型文件下载完成！"
+        echo "   🎉 所有中文模型文件下载完成！"
+    fi
+
+    # ====== 日语模型下载 ======
+    download_ja_models
+}
+
+# 下载日语模型（可选）
+download_ja_models() {
+    echo ""
+    echo "📥 检查日语模型文件..."
+    cd "$INSTALL_DIR"
+
+    # 日语模型目录：checkpoints/ja（与 api_server.py 中默认的 model_dir/ja 对应）
+    JA_MODEL_DIR="$INSTALL_DIR/checkpoints/ja"
+    mkdir -p "$JA_MODEL_DIR"
+
+    # 日语模型必需文件列表（与 api_server.py 中检查的一致）
+    JA_REQUIRED_FILES=("bpe.model" "gpt.pth" "config.yaml")
+    JA_MISSING=false
+    JA_MISSING_LIST=()
+
+    for f in "${JA_REQUIRED_FILES[@]}"; do
+        if [[ ! -f "$JA_MODEL_DIR/$f" ]]; then
+            echo "   ⚠️ 缺少: $f"
+            JA_MISSING=true
+            JA_MISSING_LIST+=("$f")
+        else
+            echo "   ✅ 已存在: $f"
+        fi
+    done
+
+    if [[ "$JA_MISSING" == false ]]; then
+        echo "   ✅ 所有日语模型文件已存在，跳过下载"
+        return 0
+    fi
+
+    echo ""
+    echo "🇯🇵 是否下载日语 TTS 模型？（用于日语语音合成）"
+    echo "   模型来源: HuggingFace Jmica/IndexTTS-2-Japanese"
+    echo "   缺少的文件:"
+    for f in "${JA_MISSING_LIST[@]}"; do
+        echo "     - $f"
+    done
+    echo ""
+    echo "请选择："
+    echo "  1) HuggingFace 镜像站下载（国内推荐）"
+    echo "  2) HuggingFace 官方下载（需要科学上网）"
+    echo "  3) 跳过日语模型下载"
+    echo ""
+    read -r -p "请输入选项 [1-3]（默认 3）: " JA_CHOICE
+    JA_CHOICE=${JA_CHOICE:-3}
+
+    case "$JA_CHOICE" in
+        1)
+            download_ja_via_hf_mirror "$JA_MODEL_DIR" || {
+                echo "   ❌ HuggingFace 镜像站下载失败，自动尝试 HuggingFace 官方..."
+                download_ja_via_huggingface "$JA_MODEL_DIR" || true
+            }
+            ;;
+        2)
+            download_ja_via_huggingface "$JA_MODEL_DIR" || {
+                echo "   ❌ HuggingFace 下载失败"
+            }
+            ;;
+        3)
+            echo "   ⏭️ 已跳过日语模型下载"
+            echo ""
+            print_ja_manual_download_help "$JA_MODEL_DIR"
+            return 0
+            ;;
+        *)
+            echo "   ⚠️ 无效选项，跳过日语模型下载"
+            return 0
+            ;;
+    esac
+
+    # 最终检查日语模型
+    echo ""
+    echo "📋 日语模型文件最终检查："
+    JA_STILL_MISSING=false
+    for f in "${JA_REQUIRED_FILES[@]}"; do
+        if [[ ! -f "$JA_MODEL_DIR/$f" ]]; then
+            echo "   ❌ 缺少: $f"
+            JA_STILL_MISSING=true
+        else
+            echo "   ✅ 已存在: $f"
+        fi
+    done
+
+    if [[ "$JA_STILL_MISSING" == true ]]; then
+        echo ""
+        print_ja_manual_download_help "$JA_MODEL_DIR"
+    else
+        echo ""
+        echo "   🎉 日语模型文件下载完成！"
     fi
 }
 
@@ -389,6 +522,21 @@ print_manual_download_help() {
     echo "   方式3（HuggingFace 官方）:"
     echo "     pip install huggingface_hub[cli]"
     echo "     hf download IndexTeam/IndexTTS-2 --local-dir $model_dir"
+    echo ""
+}
+
+# 打印日语模型手动下载帮助信息
+print_ja_manual_download_help() {
+    local model_dir="$1"
+    echo "⚠️ 日语模型文件缺失，请手动下载到: $model_dir"
+    echo ""
+    echo "   方式1（HuggingFace 镜像站，国内推荐）:"
+    echo "     pip install huggingface_hub[cli]"
+    echo "     HF_ENDPOINT=https://hf-mirror.com hf download Jmica/IndexTTS-2-Japanese --local-dir $model_dir"
+    echo ""
+    echo "   方式2（HuggingFace 官方）:"
+    echo "     pip install huggingface_hub[cli]"
+    echo "     hf download Jmica/IndexTTS-2-Japanese --local-dir $model_dir"
     echo ""
 }
 
@@ -435,6 +583,16 @@ main() {
     else
         echo "🖥️ 安装模式: CPU（推理速度较慢，建议短文本使用）"
     fi
+    echo ""
+    # 检查日语模型是否可用
+    local ja_status="❌ 不可用"
+    if [[ -f "$INSTALL_DIR/checkpoints/ja/bpe.model" && -f "$INSTALL_DIR/checkpoints/ja/gpt.pth" && -f "$INSTALL_DIR/checkpoints/ja/config.yaml" ]]; then
+        ja_status="✅ 可用"
+    fi
+
+    echo "📌 模型状态:"
+    echo "   中文模型: $INSTALL_DIR/checkpoints"
+    echo "   日语模型: $INSTALL_DIR/checkpoints/ja ($ja_status)"
     echo ""
     echo "📌 后续步骤:"
     echo ""

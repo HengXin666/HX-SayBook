@@ -6,7 +6,6 @@ import {
     FileTextOutlined,
     MergeCellsOutlined,
     PauseCircleOutlined,
-    PlayCircleOutlined,
     PlusOutlined,
     ReloadOutlined,
     RobotOutlined,
@@ -46,6 +45,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { chapterApi, emotionApi, lineApi, llmProviderApi, projectApi, promptApi, roleApi, strengthApi, ttsProviderApi, voiceApi } from '../api';
+import AudioWaveform from '../components/AudioWaveform';
 import AutoPilotModal from '../components/AutoPilotModal';
 import BatchLLMModal from '../components/BatchLLMModal';
 import BatchTTSModal from '../components/BatchTTSModal';
@@ -1113,7 +1113,7 @@ export default function ProjectDetail() {
       title: '情绪',
       dataIndex: 'emotion_id',
       key: 'emotion_id',
-      width: 110,
+      width: 90,
       render: (emotionId: number | null, record: Line) => {
         // 构建 options：始终基于 emotions 列表，并确保当前已选值一定存在
         const baseOptions = emotions.map((e) => ({ value: e.id, label: e.name }));
@@ -1149,7 +1149,7 @@ export default function ProjectDetail() {
       title: '强度',
       dataIndex: 'strength_id',
       key: 'strength_id',
-      width: 110,
+      width: 90,
       render: (strengthId: number | null, record: Line) => {
         // 构建 options：始终基于 strengths 列表，并确保当前已选值一定存在
         const baseOptions = strengths.map((s) => ({ value: s.id, label: s.name }));
@@ -1195,23 +1195,18 @@ export default function ProjectDetail() {
     {
       title: '试听',
       key: 'play',
-      width: 90,
+      width: 240,
       render: (_: unknown, record: Line) => {
         const isDone = record.audio_path && record.status === 'done';
         if (!isDone) return <Text type="secondary" style={{ fontSize: 11 }}>—</Text>;
+        const audioUrl = `/api/lines/audio-file?path=${encodeURIComponent(record.audio_path!)}&t=${record.updated_at || ''}`;
         return (
-          <Space size={2}>
-            <Tooltip title={playingLineId === record.id ? '暂停' : '播放'}>
-              <Button
-                type="text"
-                size="small"
-                icon={playingLineId === record.id ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
-                onClick={() => handlePlayLine(record)}
-                style={{ color: playingLineId === record.id ? '#f5222d' : '#52c41a' }}
-              />
-            </Tooltip>
-            <SpeedControl lineId={record.id} type="line" size="small" onComplete={loadLines} />
-          </Space>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <AudioWaveform url={audioUrl} height={32} mini />
+            </div>
+            <SpeedControl lineId={record.id} type="line" size="small" currentSpeed={record.speed ?? 1.0} onComplete={loadLines} />
+          </div>
         );
       },
     },
@@ -1652,6 +1647,22 @@ export default function ProjectDetail() {
                               type="chapter"
                               chapterId={activeChapterId}
                               size="small"
+                              currentSpeed={(() => {
+                                // 从当前章节台词中计算代表性的全局语速（取最常用的速度值）
+                                const doneLines = lines.filter(l => l.audio_path && l.status === 'done');
+                                if (doneLines.length === 0) return 1.0;
+                                const speedCounts: Record<number, number> = {};
+                                doneLines.forEach(l => {
+                                  const s = l.speed ?? 1.0;
+                                  speedCounts[s] = (speedCounts[s] || 0) + 1;
+                                });
+                                // 取出现次数最多的速度值
+                                let maxCount = 0, maxSpeed = 1.0;
+                                for (const [s, c] of Object.entries(speedCounts)) {
+                                  if (c > maxCount) { maxCount = c; maxSpeed = Number(s); }
+                                }
+                                return maxSpeed;
+                              })()}
                               onComplete={loadLines}
                             />
                           )}
@@ -1679,7 +1690,7 @@ export default function ProjectDetail() {
                             rowKey="id"
                             size="small"
                             pagination={false}
-                            scroll={{ y: 'calc(100vh - 280px)' }}
+                            scroll={{ x: 1100, y: 'calc(100vh - 280px)' }}
                           />
                         </div>
                       </div>

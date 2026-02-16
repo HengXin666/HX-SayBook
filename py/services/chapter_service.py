@@ -201,6 +201,40 @@ class ChapterService:
         return invalid_items
 
     @staticmethod
+    def _sanitize_emotions(
+        parsed_data: list,
+        emotion_names: list,
+        strength_names: list,
+        default_emotion: str = "平静",
+        default_strength: str = "中等",
+    ) -> list:
+        """
+        最终兜底清洗：确保 parsed_data 中每条数据的 emotion_name 和 strength_name
+        一定在合法列表中。对于不合法或缺失的值，强制 fallback 到默认值。
+        在构造 LineInitDTO 之前调用，杜绝脏数据入库。
+        """
+        emotion_set = set(emotion_names) if emotion_names else set()
+        strength_set = set(strength_names) if strength_names else set()
+
+        for item in parsed_data:
+            emo = (item.get("emotion_name") or "").strip()
+            stg = (item.get("strength_name") or "").strip()
+
+            # 情绪不合法或为空 → fallback
+            if not emo or emo not in emotion_set:
+                item["emotion_name"] = default_emotion
+            else:
+                item["emotion_name"] = emo  # 写回 strip 后的值
+
+            # 强度不合法或为空 → fallback
+            if not stg or stg not in strength_set:
+                item["strength_name"] = default_strength
+            else:
+                item["strength_name"] = stg  # 写回 strip 后的值
+
+        return parsed_data
+
+    @staticmethod
     def _build_emotion_fix_prompt(
         invalid_items: list, emotion_names: list, strength_names: list
     ) -> str:
@@ -230,7 +264,7 @@ class ChapterService:
 不要输出其他任何内容。
 
 示例输出：
-[{{{"index": 0, "emotion_name": "平静", "strength_name": "中等"}}}, {{{"index": 3, "emotion_name": "高兴", "strength_name": "较强"}}}]
+[{{"index": 0, "emotion_name": "平静", "strength_name": "中等"}}, {{"index": 3, "emotion_name": "高兴", "strength_name": "较强"}}]
 """
         return prompt
 
@@ -366,6 +400,11 @@ class ChapterService:
                                     parsed_data[idx]["emotion_name"] = "平静"
                                 if item["strength_name"] not in strength_set:
                                     parsed_data[idx]["strength_name"] = "中等"
+
+                # ---- 最终兜底清洗：确保所有情绪/强度一定合法 ----
+                parsed_data = self._sanitize_emotions(
+                    parsed_data, emotion_names, strength_names
+                )
 
                 line_dtos: List[LineInitDTO] = [
                     LineInitDTO(**item) for item in parsed_data
@@ -553,6 +592,11 @@ class ChapterService:
                                     parsed_data[idx]["emotion_name"] = "平静"
                                 if item["strength_name"] not in strength_set:
                                     parsed_data[idx]["strength_name"] = "中等"
+
+                # ---- 最终兜底清洗：确保所有情绪/强度一定合法 ----
+                parsed_data = self._sanitize_emotions(
+                    parsed_data, emotion_names, strength_names
+                )
 
                 line_dtos: List[LineInitDTO] = [
                     LineInitDTO(**item) for item in parsed_data

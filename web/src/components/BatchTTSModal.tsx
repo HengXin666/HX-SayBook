@@ -29,6 +29,7 @@ export default function BatchTTSModal({ open, onClose, projectId, onComplete }: 
   const { subscribe } = useWebSocket();
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [running, setRunning] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [overallProgress, setOverallProgress] = useState(0);
   const [overallDone, setOverallDone] = useState(0);
@@ -37,13 +38,15 @@ export default function BatchTTSModal({ open, onClose, projectId, onComplete }: 
   const [currentChapterIdx, setCurrentChapterIdx] = useState(0);
   const [totalChapters, setTotalChapters] = useState(0);
 
-  // 使用持久化配置（语速、范围）
+  // 使用持久化配置（语速、范围、跳过已配音）
   const [persistedConfig, updateConfig] = usePersistedConfig(
     `saybook_batchtts_${projectId}`,
-    { speed: 1.0, rangeStart: 1, rangeEnd: 0 }
+    { speed: 1.0, rangeStart: 1, rangeEnd: 0, skipDone: true }
   );
   const speed = persistedConfig.speed;
   const setSpeed = (v: number) => updateConfig('speed', v);
+  const skipDone = persistedConfig.skipDone ?? true;
+  const setSkipDone = (v: boolean) => updateConfig('skipDone', v);
 
   // 使用懒加载 Hook
   const lazyList = useChapterLazyList({ projectId });
@@ -60,6 +63,7 @@ export default function BatchTTSModal({ open, onClose, projectId, onComplete }: 
       setCurrentChapterIdx(0);
       setTotalChapters(0);
       setChapterStatuses(new Map());
+      setCancelling(false);
     }
   }, [open, projectId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -123,7 +127,7 @@ export default function BatchTTSModal({ open, onClose, projectId, onComplete }: 
 
         const chapterId = data.chapter_id as number;
         const lineStatus = data.status as string;
-        if (lineStatus === 'done' || lineStatus === 'failed') {
+        if (lineStatus === 'done' || lineStatus === 'failed' || lineStatus === 'skipped') {
           setChapterStatuses((prev) => {
             const next = new Map(prev);
             const existing = next.get(chapterId);
@@ -154,9 +158,15 @@ export default function BatchTTSModal({ open, onClose, projectId, onComplete }: 
       subscribe('batch_tts_complete', (data: WSEvent) => {
         if (data.project_id !== projectId) return;
         setLogs((prev) => [...prev, data.log as string]);
-        setOverallProgress(100);
+        const wasCancelled = data.cancelled as boolean;
+        if (!wasCancelled) {
+          setOverallProgress(100);
+          message.success('批量TTS配音全部完成！');
+        } else {
+          message.info('批量TTS配音已取消');
+        }
         setRunning(false);
-        message.success('批量TTS配音全部完成！');
+        setCancelling(false);
         onComplete?.();
       }),
     ];
@@ -170,7 +180,8 @@ export default function BatchTTSModal({ open, onClose, projectId, onComplete }: 
       return;
     }
     setRunning(true);
-    setLogs([`🚀 开始批量TTS配音，共 ${selectedIds.length} 个章节，语速 ${speed}x`]);
+    setCancelling(false);
+    setLogs([`🚀 开始批量TTS配音，共 ${selectedIds.length} 个章节，语速 ${speed}x` + (skipDone ? '（跳过已配音）' : '')]);
     setOverallProgress(0);
     setOverallDone(0);
     setOverallTotal(0);
@@ -188,7 +199,7 @@ export default function BatchTTSModal({ open, onClose, projectId, onComplete }: 
     });
 
     try {
-      const res = await batchApi.ttsGenerate({ project_id: projectId, chapter_ids: selectedIds, speed });
+      const res = await batchApi.ttsGenerate({ project_id: projectId, chapter_ids: selectedIds, speed, skip_done: skipDone });
       if (res.code !== 200) {
         message.error(res.message || '启动失败');
         setRunning(false);
@@ -197,7 +208,24 @@ export default function BatchTTSModal({ open, onClose, projectId, onComplete }: 
       message.error('请求失败');
       setRunning(false);
     }
-  }, [selectedIds, projectId, speed]);
+  }, [selectedIds, projectId, speed, skipDone]);
+
+  // 取消任务
+  const handleCancel = useCallback(async () => {
+    setCancelling(true);
+    try {
+      const res = await batchApi.ttsCancel(projectId);
+      if (res.code === 200) {
+        setLogs((prev) => [...prev, '⏹️ 取消信号已发送，等待当前台词处理完成...']);
+      } else {
+        message.error(res.message || '取消失败');
+        setCancelling(false);
+      }
+    } catch {
+      message.error('取消请求失败');
+      setCancelling(false);
+    }
+  }, [projectId]);
 
   // 范围选择（从持久化配置中读取）
   const rangeStart = persistedConfig.rangeStart;
@@ -298,6 +326,23 @@ export default function BatchTTSModal({ open, onClose, projectId, onComplete }: 
               关闭
             </button>
           )}
+          {running && (
+            <button
+              onClick={handleCancel}
+              disabled={cancelling}
+              style={{
+                padding: '6px 16px',
+                background: cancelling ? '#45475a' : '#f38ba8',
+                border: 'none',
+                borderRadius: 6,
+                color: '#fff',
+                cursor: cancelling ? 'not-allowed' : 'pointer',
+                fontWeight: 500,
+              }}
+            >
+              {cancelling ? '取消中...' : '取消任务'}
+            </button>
+          )}
           <button
             onClick={handleStart}
             disabled={running || selectedIds.length === 0}
@@ -349,6 +394,18 @@ export default function BatchTTSModal({ open, onClose, projectId, onComplete }: 
           disabled={running}
           marks={{ 0.5: '0.5x', 1.0: '1.0x', 1.5: '1.5x', 2.0: '2.0x' }}
         />
+      </div>
+
+      {/* 跳过已配音 */}
+      <div style={{ marginBottom: 16, background: '#181825', borderRadius: 8, padding: '8px 12px', border: '1px solid #313244' }}>
+        <Checkbox
+          checked={skipDone}
+          onChange={(e) => setSkipDone(e.target.checked)}
+          disabled={running}
+        >
+          <Text style={{ color: '#cdd6f4' }}>⏭️ 跳过已配音的台词</Text>
+        </Checkbox>
+        <Text style={{ color: '#585b70', fontSize: 11, marginLeft: 8 }}>（跳过 status=done 且音频文件存在的台词，适合中断后继续配音）</Text>
       </div>
 
       {/* 章节选择 */}

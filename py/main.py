@@ -126,6 +126,7 @@ def _run_migrations():
     _add_column_if_missing("projects", "passerby_voice_pool", "TEXT")
     _add_column_if_missing("projects", "language", "TEXT DEFAULT 'zh'")
     _add_column_if_missing("roles", "description", "TEXT")
+    _add_column_if_missing("lines", "speed", "REAL DEFAULT 1.0")
 
     # custom_params 需要特殊处理：填入默认值
     with engine.begin() as conn:

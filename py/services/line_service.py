@@ -255,6 +255,51 @@ class LineService:
                 language=language,
             )
 
+    def ensure_audio_uploaded(self, reference_path: str, tts_provider_id):
+        """
+        预上传音色到 TTS 服务端（如果不存在的话）。
+        用于批量 TTS 前一次性预上传所有音色，避免逐条检查。
+        """
+        tts_provider = self.tts_provider_repository.get_by_id(tts_provider_id)
+        tts_engine = TTSEngine(tts_provider.api_base_url)
+        if not tts_engine.check_audio_exists(reference_path):
+            tts_engine.upload_audio(reference_path, reference_path)
+
+    def generate_audio_no_check(
+        self,
+        reference_path: str,
+        tts_provider_id,
+        content,
+        emo_text: str,
+        emo_vector: list[float],
+        save_path=None,
+        language: str = None,
+    ):
+        """
+        跳过音色检查/上传，直接调用 TTS 合成。
+        适用于批量 TTS 场景，音色已在任务开始前预上传。
+        """
+        tts_provider = self.tts_provider_repository.get_by_id(tts_provider_id)
+        tts_engine = TTSEngine(tts_provider.api_base_url)
+        return tts_engine.synthesize(
+            content,
+            reference_path,
+            emo_text,
+            emo_vector,
+            save_path,
+            language=language,
+        )
+
+    def _clean_orig_backup(self, audio_path: str):
+        """TTS 重新生成后，清理旧的原始音频备份，使下次变速基于新生成的音频"""
+        if audio_path:
+            orig_path = self._get_orig_path(audio_path)
+            if os.path.exists(orig_path):
+                try:
+                    os.remove(orig_path)
+                except OSError:
+                    pass
+
     async def generate_audio_async(
         self,
         reference_path: str,
@@ -333,6 +378,12 @@ class LineService:
             print(f"[update_audio_path] 失败: {e}")
             return False
 
+    @staticmethod
+    def _get_orig_path(audio_path: str) -> str:
+        """获取原始音频备份路径: xxx.wav -> xxx.orig.wav"""
+        base, ext = os.path.splitext(audio_path)
+        return f"{base}.orig{ext}"
+
     def process_audio_ffmpeg(
         self,
         audio_path: str,
@@ -349,19 +400,60 @@ class LineService:
         使用 ffmpeg 对音频进行变速 (0.5~2.0)、音量调整、可选裁剪。
         输出 WAV PCM16。
         如果 keep_format=True，则保持输入文件的 sr/ch 不变。
+
+        变速采用"绝对变速"策略：
+        - 首次变速时自动保存原始音频备份 (.orig.wav)
+        - 后续变速始终从原始备份开始处理，避免累积误差
+        - speed=1.0 时恢复原始音频
         """
         ffmpeg_path = getFfmpegPath()
         if not os.path.exists(audio_path):
             raise FileNotFoundError(audio_path)
 
-        # 获取原始参数
-        info = sf.info(audio_path)
-        target_sr = info.samplerate if keep_format else default_sr
-        target_ch = info.channels if keep_format else default_ch
-
         # 参数规整
         speed = float(np.clip(speed or 1.0, 0.5, 2.0))
         volume = 1.0 if volume is None else max(0.0, float(volume))
+
+        # --- 绝对变速：备份原始音频 ---
+        # 仅当没有 out_path 时（即原地变速）才使用备份机制
+        orig_path = self._get_orig_path(audio_path)
+        if out_path is None:
+            if not os.path.exists(orig_path):
+                # 首次变速，保存原始备份
+                # (TTS 重新生成时会自动删除旧的 .orig 文件，无需 mtime 判断)
+                import shutil
+
+                shutil.copy2(audio_path, orig_path)
+                print(f"[变速] 首次变速，创建备份: {orig_path}")
+            # 始终从原始备份读取，确保变速是绝对的而非累积的
+            source_path = orig_path
+            # 如果 speed=1.0 且无其他处理，直接恢复原始音频
+            if (
+                abs(speed - 1.0) < 1e-6
+                and abs(volume - 1.0) < 1e-6
+                and start_ms is None
+                and end_ms is None
+            ):
+                import shutil
+
+                shutil.copy2(orig_path, audio_path)
+                # 恢复后删除备份，避免旧的被污染的备份被反复使用
+                try:
+                    os.remove(orig_path)
+                    print(f"[变速] speed=1.0 恢复原始音频并删除备份: {orig_path}")
+                except OSError:
+                    pass
+                return audio_path
+            print(f"[变速] 从备份变速: speed={speed}, source={source_path}")
+        else:
+            # 有 out_path 时（如 preview/debug），不需要备份机制
+            source_path = audio_path
+            print(f"[变速] 直接变速(有out_path): speed={speed}, source={source_path}")
+
+        # 获取原始参数（从源文件读取）
+        info = sf.info(source_path)
+        target_sr = info.samplerate if keep_format else default_sr
+        target_ch = info.channels if keep_format else default_ch
 
         # 输出路径
         target_path = out_path or audio_path
@@ -379,7 +471,7 @@ class LineService:
         cmd = [ffmpeg_path, "-y"]
         if start_ms is not None:
             cmd.extend(["-ss", str(start_ms / 1000)])
-        cmd.extend(["-i", audio_path])
+        cmd.extend(["-i", source_path])
         if end_ms is not None:
             cmd.extend(["-to", str(end_ms / 1000)])
         cmd.extend(

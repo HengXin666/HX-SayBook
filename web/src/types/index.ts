@@ -64,6 +64,7 @@ export interface Line {
   strength_id: number | null;
   audio_path: string | null;
   subtitle_path: string | null;
+  speed: number;
   status: 'pending' | 'processing' | 'done' | 'failed';
   is_done: number;
   created_at: string;
@@ -178,6 +179,8 @@ export interface BatchTTSRequest {
   project_id: number;
   chapter_ids: number[];
   speed?: number;
+  /** 跳过已配音(status=done且音频文件存在)的台词 */
+  skip_done?: boolean;
 }
 
 /** 语音调试请求 */

@@ -1,8 +1,9 @@
-import { ClearOutlined, CompressOutlined, DeleteOutlined, ExpandOutlined, PlayCircleOutlined, SoundOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { ClearOutlined, CompressOutlined, DeleteOutlined, ExpandOutlined, SoundOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { Button, Card, Collapse, Form, Input, List, Select, Slider, Space, Tabs, Tag, Tooltip, Typography, message } from 'antd';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { batchApi } from '../api';
 import { API_BASE } from '../api/client';
+import AudioWaveform from '../components/AudioWaveform';
 import { useAppStore } from '../store';
 
 const { Title, Text } = Typography;
@@ -88,7 +89,6 @@ export default function VoiceDebug() {
   // 从 localStorage 恢复历史记录
   const [results, setResults] = useState<DebugResult[]>(() => loadFromStorage(LS_KEY_RESULTS, []));
   const [previewSpeed, setPreviewSpeed] = useState(1.0);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
   const resultIdRef = useRef<number>(initMaxId(LS_KEY_RESULTS));
 
   // 批量对比模式
@@ -97,9 +97,6 @@ export default function VoiceDebug() {
   const [compareLoading, setCompareLoading] = useState(false);
   const [compareForm] = Form.useForm();
   const compareGroupIdRef = useRef<number>(initMaxId(LS_KEY_COMPARE));
-
-  // 当前播放
-  const [playingId, setPlayingId] = useState<number | null>(null);
 
   useEffect(() => {
     fetchVoices();
@@ -117,15 +114,6 @@ export default function VoiceDebug() {
   useEffect(() => {
     saveToStorage(LS_KEY_COMPARE, compareGroups.slice(0, LS_MAX_COMPARE));
   }, [compareGroups]);
-
-  // 监听音频播放结束
-  useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
-    const onEnded = () => setPlayingId(null);
-    audio.addEventListener('ended', onEnded);
-    return () => audio.removeEventListener('ended', onEnded);
-  }, []);
 
   const handleGenerate = async () => {
     try {
@@ -157,8 +145,7 @@ export default function VoiceDebug() {
         setResults((prev) => [newResult, ...prev]);
         message.success('语音生成成功！');
 
-        // 自动播放
-        handlePlay(newResult.id, newResult.audio_url);
+        // 音频会通过波形组件自动展示
       } else {
         message.error(res.message || '生成失败');
       }
@@ -237,19 +224,6 @@ export default function VoiceDebug() {
     }
   };
 
-  const handlePlay = (id: number, url: string) => {
-    if (audioRef.current) {
-      if (playingId === id) {
-        audioRef.current.pause();
-        setPlayingId(null);
-        return;
-      }
-      audioRef.current.src = url;
-      setPlayingId(id);
-      audioRef.current.play().catch(() => {});
-    }
-  };
-
   const handleDeleteResult = useCallback((id: number) => {
     setResults((prev) => prev.filter((r) => r.id !== id));
   }, []);
@@ -291,9 +265,6 @@ export default function VoiceDebug() {
           {compareMode ? '返回单次调试' : '批量对比模式'}
         </Button>
       </div>
-
-      {/* 隐藏的 audio 播放器 */}
-      <audio ref={audioRef} style={{ display: 'none' }} />
 
       <Tabs
         activeKey={compareMode ? 'compare' : 'single'}
@@ -388,37 +359,25 @@ export default function VoiceDebug() {
                       dataSource={results}
                       renderItem={(item) => (
                         <List.Item
-                          style={{ borderColor: '#313244' }}
-                          actions={[
-                            <Button
-                              key="play"
-                              type="link"
-                              icon={playingId === item.id ? <SoundOutlined spin /> : <PlayCircleOutlined />}
-                              onClick={() => handlePlay(item.id, item.audio_url)}
-                            >
-                              {playingId === item.id ? '播放中' : '播放'}
-                            </Button>,
-                            <Button key="delete" type="link" danger icon={<DeleteOutlined />} onClick={() => handleDeleteResult(item.id)} />,
-                          ]}
+                          style={{ borderColor: '#313244', display: 'block', padding: '12px 0' }}
                         >
-                          <List.Item.Meta
-                            title={
-                              <Space>
-                                <Tag color="blue">{item.voice_name}</Tag>
-                                <Tag color="green">{item.emotion}</Tag>
-                                <Tag color="orange">{item.strength}</Tag>
-                                <Tag>{item.speed}x</Tag>
-                              </Space>
-                            }
-                            description={
-                              <div>
-                                <Text style={{ color: '#a6adc8', fontSize: 13 }}>{item.text}</Text>
-                                <div style={{ marginTop: 4 }}>
-                                  <Text type="secondary" style={{ fontSize: 11 }}>{item.timestamp}</Text>
-                                </div>
-                              </div>
-                            }
-                          />
+                          {/* 顶部：标签 + 删除按钮 */}
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                            <Space size={4}>
+                              <Tag color="blue">{item.voice_name}</Tag>
+                              <Tag color="green">{item.emotion}</Tag>
+                              <Tag color="orange">{item.strength}</Tag>
+                              <Tag>{item.speed}x</Tag>
+                            </Space>
+                            <Space size={4}>
+                              <Text type="secondary" style={{ fontSize: 11 }}>{item.timestamp}</Text>
+                              <Button type="text" size="small" danger icon={<DeleteOutlined />} onClick={() => handleDeleteResult(item.id)} />
+                            </Space>
+                          </div>
+                          {/* 文本内容 */}
+                          <Text style={{ color: '#a6adc8', fontSize: 13, display: 'block', marginBottom: 6 }}>{item.text}</Text>
+                          {/* 波形播放器 */}
+                          <AudioWaveform url={item.audio_url} height={40} />
                         </List.Item>
                       )}
                     />
@@ -541,24 +500,16 @@ export default function VoiceDebug() {
                             dataSource={group.results}
                             renderItem={(item) => (
                               <List.Item
-                                style={{ borderColor: '#313244' }}
-                                actions={[
-                                  <Button
-                                    key="play"
-                                    type="link"
-                                    size="small"
-                                    icon={playingId === item.id ? <SoundOutlined spin /> : <PlayCircleOutlined />}
-                                    onClick={() => handlePlay(item.id, item.audio_url)}
-                                  >
-                                    {playingId === item.id ? '播放中' : '播放'}
-                                  </Button>,
-                                ]}
+                                style={{ borderColor: '#313244', display: 'block', padding: '8px 0' }}
                               >
-                                <Space>
-                                  <Tag color="blue">{item.voice_name}</Tag>
-                                  <Tag color="green">{item.emotion}</Tag>
-                                  <Tag>{item.speed}x</Tag>
-                                </Space>
+                                <div style={{ display: 'flex', alignItems: 'center', marginBottom: 4 }}>
+                                  <Space size={4}>
+                                    <Tag color="blue">{item.voice_name}</Tag>
+                                    <Tag color="green">{item.emotion}</Tag>
+                                    <Tag>{item.speed}x</Tag>
+                                  </Space>
+                                </div>
+                                <AudioWaveform url={item.audio_url} height={36} mini />
                               </List.Item>
                             )}
                           />
