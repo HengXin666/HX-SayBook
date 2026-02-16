@@ -94,10 +94,34 @@ for f in required_files:
 
 # 检查日语模型文件是否存在
 ja_model_dir = args.ja_model_dir
-ja_required_files = ["bpe.model", "gpt.pth", "config.yaml"]
-ja_available = all(
-    os.path.exists(os.path.join(ja_model_dir, f)) for f in ja_required_files
-)
+# 支持实际下载的日语模型文件名格式
+ja_available = False
+if os.path.exists(ja_model_dir):
+    # 检查是否有日语模型文件（支持多种可能的文件名）
+    bpe_files = ["japanese_bpe.model", "bpe.model"]
+    gpt_files = ["model_jp_163000.pth", "model_step36000.pth", "gpt.pth"]
+    config_files = ["config.yaml"]
+
+    # 检查文件是否存在
+    has_bpe = any(os.path.exists(os.path.join(ja_model_dir, f)) for f in bpe_files)
+    has_gpt = any(os.path.exists(os.path.join(ja_model_dir, f)) for f in gpt_files)
+    has_config = any(
+        os.path.exists(os.path.join(ja_model_dir, f)) for f in config_files
+    )
+
+    ja_available = has_bpe and has_gpt and has_config
+
+    if ja_available:
+        print(f"✅ 日语模型文件就绪 ({ja_model_dir})")
+        print(
+            f"   BPE 文件: {' | '.join([f for f in bpe_files if os.path.exists(os.path.join(ja_model_dir, f))])}"
+        )
+        print(
+            f"   GPT 文件: {' | '.join([f for f in gpt_files if os.path.exists(os.path.join(ja_model_dir, f))])}"
+        )
+        print(
+            f"   配置文件: {' | '.join([f for f in config_files if os.path.exists(os.path.join(ja_model_dir, f))])}"
+        )
 if ja_available:
     print(f"✅ 日语模型文件就绪 ({ja_model_dir})")
 else:
@@ -139,6 +163,30 @@ class TTSModelManager:
             model_dir = ja_model_dir
             cfg_path = os.path.join(ja_model_dir, "config.yaml")
             lang_name = "日语"
+
+            # 日语模型文件名映射
+            model_files = {
+                "bpe.model": "japanese_bpe.model",
+                "gpt.pth": "model_jp_163000.pth",  # 优先使用较新的模型
+            }
+
+            # 检查实际存在的文件
+            for expected, actual in model_files.items():
+                actual_path = os.path.join(model_dir, actual)
+                if os.path.exists(actual_path):
+                    # 创建符号链接或复制文件（如果不存在标准文件名）
+                    expected_path = os.path.join(model_dir, expected)
+                    if not os.path.exists(expected_path):
+                        try:
+                            os.symlink(actual, expected_path)
+                            print(f"🔗 创建符号链接: {expected} -> {actual}")
+                        except OSError:
+                            # 如果符号链接失败，尝试复制文件
+                            import shutil
+
+                            shutil.copy2(actual_path, expected_path)
+                            print(f"📄 复制文件: {actual} -> {expected}")
+
         else:
             model_dir = args.model_dir
             cfg_path = os.path.join(args.model_dir, "config.yaml")
