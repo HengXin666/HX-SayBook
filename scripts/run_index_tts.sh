@@ -15,6 +15,43 @@ fi
 # 拷贝 api_server.py 到 index-tts 目录
 cp ../api_server.py api_server.py
 
+# ====== 检查并安装 API 服务依赖 ======
+check_and_install_deps() {
+    local missing_deps=()
+    
+    # 检查必需的 Python 模块
+    python -c "import uvicorn" 2>/dev/null || missing_deps+=("uvicorn[standard]")
+    python -c "import fastapi" 2>/dev/null || missing_deps+=("fastapi")
+    python -c "import multipart" 2>/dev/null || missing_deps+=("python-multipart")
+    python -c "import pykakasi" 2>/dev/null || missing_deps+=("pykakasi")
+    
+    if [[ ${#missing_deps[@]} -gt 0 ]]; then
+        echo ""
+        echo "⚠️  检测到缺少依赖模块:"
+        for dep in "${missing_deps[@]}"; do
+            echo "   - $dep"
+        done
+        echo ""
+        read -p "是否自动安装缺少的依赖? (y/n) " install_choice
+        if [[ "$install_choice" == "y" ]]; then
+            echo "📦 安装缺少的依赖..."
+            if command -v uv &>/dev/null; then
+                uv pip install "${missing_deps[@]}"
+            else
+                pip install "${missing_deps[@]}"
+            fi
+            echo "✅ 依赖安装完成"
+        else
+            echo "❌ 缺少必需依赖，无法启动服务"
+            echo "   请手动安装: pip install ${missing_deps[*]}"
+            exit 1
+        fi
+    fi
+}
+
+echo "[检查] Python 依赖..."
+check_and_install_deps
+
 echo "========================================"
 echo "  Index-TTS 服务启动"
 echo "  支持: 中文 / 日语 / 小显存模式"
