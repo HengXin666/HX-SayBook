@@ -63,45 +63,63 @@ class TTSProviderService:
         )
         self.repository.create(po)
 
-    def test_tts_provider(self, entity: TTSProviderEntity) -> tuple[bool, str]:
-        """测试 TTS 供应商连接，返回 (是否成功, 消息)"""
-        api_base_url = entity.api_base_url
-        if not api_base_url:
-            return False, "API 地址为空，请先填写 API 地址"
-
-        # 确保请求的是根路径（用于连接测试）
-        url = api_base_url.rstrip("/")
-
+    def _test_single_url(self, url: str) -> tuple[bool, str]:
+        """测试单个 TTS 端点连接"""
+        url = url.rstrip("/")
         try:
             resp = requests.get(url, timeout=5)
-
             if 200 <= resp.status_code < 400:
                 try:
                     data = resp.json()
                     if "endpoints" in data:
-                        return True, "测试成功"
+                        return True, "连接成功"
                     else:
                         return False, (
-                            f"连接成功但响应中缺少 'endpoints' 字段，"
-                            f"请确认 API 地址填写的是根路径（如 http://localhost:8000），"
-                            f"而非子路径。实际响应: {str(data)[:200]}"
+                            f"响应中缺少 'endpoints' 字段，"
+                            f"请确认填写的是根路径（如 http://localhost:8000）"
                         )
                 except ValueError:
-                    return False, (
-                        f"连接成功但响应不是有效的 JSON，"
-                        f"请确认 API 地址是否正确。响应内容: {resp.text[:200]}"
-                    )
+                    return False, f"响应不是有效的 JSON"
             else:
-                return False, f"连接失败，HTTP 状态码: {resp.status_code}"
-
+                return False, f"HTTP {resp.status_code}"
         except requests.exceptions.ConnectionError:
-            return False, (
-                f"无法连接到 {url}，请检查：\n"
-                f"1. Index-TTS API 服务是否已启动\n"
-                f"2. 地址和端口是否正确\n"
-                f"3. 防火墙是否阻止了连接"
-            )
+            return False, f"无法连接，请检查服务是否已启动"
         except requests.exceptions.Timeout:
-            return False, f"连接超时（5秒），请检查 API 服务 {url} 是否可达"
+            return False, f"连接超时（5秒）"
         except Exception as e:
-            return False, f"测试异常: {str(e)}"
+            return False, f"异常: {str(e)}"
+
+    def test_tts_provider(self, entity: TTSProviderEntity) -> tuple[bool, str]:
+        """测试 TTS 供应商连接，支持逗号分隔的多个地址，返回 (是否成功, 消息)"""
+        api_base_url = entity.api_base_url
+        if not api_base_url:
+            return False, "API 地址为空，请先填写 API 地址"
+
+        # 解析多个地址（逗号分隔）
+        urls = [u.strip() for u in api_base_url.split(",") if u.strip()]
+        if not urls:
+            return False, "API 地址为空，请先填写 API 地址"
+
+        # 单地址：直接测试
+        if len(urls) == 1:
+            success, msg = self._test_single_url(urls[0])
+            if success:
+                return True, "测试成功"
+            else:
+                return False, f"{urls[0]}: {msg}"
+
+        # 多地址：逐个测试，汇总结果
+        results = []
+        all_ok = True
+        for url in urls:
+            ok, msg = self._test_single_url(url)
+            results.append(f"{'✅' if ok else '❌'} {url}: {msg}")
+            if not ok:
+                all_ok = False
+
+        summary = "\n".join(results)
+        if all_ok:
+            return True, f"全部 {len(urls)} 个端点测试成功\n{summary}"
+        else:
+            ok_count = sum(1 for url in urls if self._test_single_url(url)[0])
+            return False, f"{ok_count}/{len(urls)} 个端点可用\n{summary}"

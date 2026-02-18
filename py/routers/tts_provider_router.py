@@ -85,11 +85,11 @@ def test_tts_provider(
     测试tts是否正常
     """
     entity = TTSProviderEntity(**dto.dict())
-    success, message = service.test_tts_provider(entity)
+    success, msg = service.test_tts_provider(entity)
     if success:
-        return Res(data=None, code=200, message="测试成功")
+        return Res(data=None, code=200, message=msg)
     else:
-        return Res(data=None, code=400, message=message)
+        return Res(data=None, code=400, message=msg)
 
 
 # ------------------- 删除TTS供应商 -------------------

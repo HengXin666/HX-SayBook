@@ -1,5 +1,5 @@
 import { ApiOutlined, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
-import { Button, Card, Form, Input, message, Modal, Popconfirm, Space, Table, Tabs, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Form, Input, message, Modal, Popconfirm, Space, Table, Tabs, Tag, Typography } from 'antd';
 import { useEffect, useState } from 'react';
 import { llmProviderApi, ttsProviderApi } from '../api';
 import { useAppStore } from '../store';
@@ -101,7 +101,7 @@ export default function ConfigCenter() {
       setTestingTTS(true);
       const res = await ttsProviderApi.test(values);
       if (res.code === 200) {
-        message.success('TTS 连接测试成功 ✅');
+        message.success(res.message || 'TTS 连接测试成功 ✅');
       } else {
         message.error(`测试失败：${res.message || '未知错误'}`);
       }
@@ -139,7 +139,18 @@ export default function ConfigCenter() {
 
   const ttsColumns = [
     { title: '名称', dataIndex: 'name', key: 'name' },
-    { title: 'API 地址', dataIndex: 'api_base_url', key: 'api_base_url', ellipsis: true },
+    {
+      title: 'API 地址', dataIndex: 'api_base_url', key: 'api_base_url', ellipsis: true,
+      render: (v: string) => {
+        const urls = v ? v.split(',').map((u: string) => u.trim()).filter(Boolean) : [];
+        return (
+          <Space direction="vertical" size={0}>
+            <span>{urls[0] || '-'}</span>
+            {urls.length > 1 && <Tag color="blue" style={{ marginTop: 2 }}>共 {urls.length} 个端点（{urls.length}x 并发）</Tag>}
+          </Space>
+        );
+      },
+    },
     {
       title: '状态', dataIndex: 'status', key: 'status',
       render: (s: number) => <Tag color={s === 1 ? 'green' : 'red'}>{s === 1 ? '启用' : '禁用'}</Tag>,
@@ -228,7 +239,44 @@ export default function ConfigCenter() {
       >
         <Form form={ttsForm} layout="vertical">
           <Form.Item name="name" label="名称" rules={[{ required: true }]}><Input placeholder="如: Index-TTS" /></Form.Item>
-          <Form.Item name="api_base_url" label="API 地址" rules={[{ required: true }]}><Input placeholder="http://127.0.0.1:8000" /></Form.Item>
+          <Form.Item
+            name="api_base_url"
+            label="API 地址"
+            rules={[{ required: true }]}
+            tooltip="填写多个地址（逗号分隔）可启用并发 TTS，显著加速批量配音"
+            extra={
+              <span style={{ color: '#6c7086', fontSize: 12 }}>
+                💡 多个实例用英文逗号分隔，如：http://host1:8000, http://host2:8000
+              </span>
+            }
+          >
+            <Input.TextArea
+              rows={2}
+              placeholder={"http://127.0.0.1:8000\n多个地址用英文逗号分隔，可实现并发加速"}
+            />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.api_base_url !== cur.api_base_url}>
+            {() => {
+              const val = ttsForm.getFieldValue('api_base_url') || '';
+              const urls = val.split(',').map((u: string) => u.trim()).filter(Boolean);
+              if (urls.length > 1) {
+                return (
+                  <Alert
+                    type="info"
+                    showIcon
+                    style={{ marginBottom: 16 }}
+                    message={`已配置 ${urls.length} 个 TTS 端点，批量配音将以 ${urls.length}x 并发执行`}
+                    description={
+                      <ul style={{ margin: '4px 0', paddingLeft: 20 }}>
+                        {urls.map((u: string, i: number) => <li key={i}>{u}</li>)}
+                      </ul>
+                    }
+                  />
+                );
+              }
+              return null;
+            }}
+          </Form.Item>
           <Form.Item name="api_key" label="API Key"><Input.Password placeholder="可选" /></Form.Item>
         </Form>
       </Modal>
