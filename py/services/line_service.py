@@ -18,7 +18,7 @@ from py.core.audio_engin import AudioProcessor
 from py.core.config import getConfigPath, getFfmpegPath
 from py.core.subtitle import subtitle_engine
 from py.core.subtitle_export import build_subtitle_segments, generate_subtitle_files
-from py.core.tts_engine import TTSEngine
+from py.core.tts_engine import TTSEngine, MultiTTSEngine
 from py.dto.line_dto import LineCreateDTO, LineOrderDTO, LineAudioProcessDTO
 from py.entity.line_entity import LineEntity
 from py.models.po import LinePO, RolePO
@@ -232,20 +232,12 @@ class LineService:
     ):
         #
         tts_provider = self.tts_provider_repository.get_by_id(tts_provider_id)
-        tts_engine = TTSEngine(tts_provider.api_base_url)
-        # 先判断是否存在
-
-        # if not tts_engine.check_audio_exists(filename):
-        #     # 不存在就先上传
-        #     tts_engine.upload_audio(reference_path)
-        # return tts_engine.synthesize(content, filename,save_path)
+        tts_engine = MultiTTSEngine(tts_provider.api_base_url)
         key = _lock_key(reference_path)
         lock = _file_locks[key]
 
         with lock:
-            if not tts_engine.check_audio_exists(reference_path):
-                tts_engine.upload_audio(reference_path, reference_path)
-            #     添加emo_text
+            tts_engine.ensure_all_uploaded(reference_path, reference_path)
             return tts_engine.synthesize(
                 content,
                 reference_path,
@@ -257,13 +249,13 @@ class LineService:
 
     def ensure_audio_uploaded(self, reference_path: str, tts_provider_id):
         """
-        预上传音色到 TTS 服务端（如果不存在的话）。
+        预上传音色到所有 TTS 服务实例（如果不存在的话）。
         用于批量 TTS 前一次性预上传所有音色，避免逐条检查。
+        支持多端点：逗号分隔的 api_base_url 会自动上传到每个实例。
         """
         tts_provider = self.tts_provider_repository.get_by_id(tts_provider_id)
-        tts_engine = TTSEngine(tts_provider.api_base_url)
-        if not tts_engine.check_audio_exists(reference_path):
-            tts_engine.upload_audio(reference_path, reference_path)
+        tts_engine = MultiTTSEngine(tts_provider.api_base_url)
+        tts_engine.ensure_all_uploaded(reference_path, reference_path)
 
     def generate_audio_no_check(
         self,
@@ -278,9 +270,10 @@ class LineService:
         """
         跳过音色检查/上传，直接调用 TTS 合成。
         适用于批量 TTS 场景，音色已在任务开始前预上传。
+        支持多端点轮询：自动选择下一个 TTS 实例。
         """
         tts_provider = self.tts_provider_repository.get_by_id(tts_provider_id)
-        tts_engine = TTSEngine(tts_provider.api_base_url)
+        tts_engine = MultiTTSEngine(tts_provider.api_base_url)
         return tts_engine.synthesize(
             content,
             reference_path,
@@ -312,16 +305,15 @@ class LineService:
     ):
         """
         异步版生成音频 —— 用 asyncio.Lock + httpx 非阻塞 IO。
+        支持多端点轮询：自动选择下一个 TTS 实例。
         """
         tts_provider = self.tts_provider_repository.get_by_id(tts_provider_id)
-        tts_engine = TTSEngine(tts_provider.api_base_url)
+        tts_engine = MultiTTSEngine(tts_provider.api_base_url)
         key = _lock_key(reference_path)
         lock = _async_file_locks[key]
 
         async with lock:
-            exists = await tts_engine.check_audio_exists_async(reference_path)
-            if not exists:
-                await tts_engine.upload_audio_async(reference_path, reference_path)
+            await tts_engine.ensure_all_uploaded_async(reference_path, reference_path)
             return await tts_engine.synthesize_async(
                 content,
                 reference_path,
@@ -330,6 +322,32 @@ class LineService:
                 save_path,
                 language=language,
             )
+
+    async def generate_audio_no_check_async(
+        self,
+        reference_path: str,
+        tts_provider_id,
+        content,
+        emo_text: str,
+        emo_vector: list[float],
+        save_path=None,
+        language: str = None,
+    ):
+        """
+        异步版跳过音色检查/上传，直接调用 TTS 合成。
+        适用于批量 TTS 场景，音色已在任务开始前预上传。
+        支持多端点轮询。
+        """
+        tts_provider = self.tts_provider_repository.get_by_id(tts_provider_id)
+        tts_engine = MultiTTSEngine(tts_provider.api_base_url)
+        return await tts_engine.synthesize_async(
+            content,
+            reference_path,
+            emo_text,
+            emo_vector,
+            save_path,
+            language=language,
+        )
 
     # 将角色role_id下所有台词的role_id都置位空
     def clear_role_id(self, role_id: int):

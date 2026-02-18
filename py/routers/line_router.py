@@ -1,10 +1,12 @@
 import asyncio
 import os
+import zipfile
+import io
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Body, Request, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from py.core.config import getConfigPath
@@ -91,6 +93,14 @@ class MergeExportRequest(BaseModel):
     max_duration_minutes: float = 0  # 每段最大时长（分钟），0表示不限制
 
 
+class MergeZipRequest(BaseModel):
+    """打包下载请求"""
+
+    project_id: int
+    files: List[dict]  # [{"url": ..., "name": ...}] 需要打包的文件
+    include_subtitles: bool = True  # 是否包含字幕文件
+
+
 @router.post("/merge-export", response_model=Res)
 async def merge_export_audio(
     req: MergeExportRequest,
@@ -99,7 +109,7 @@ async def merge_export_audio(
     chapter_service: ChapterService = Depends(get_chapter_service),
 ):
     """
-    合并多章节音频为 MP3 文件。
+    合并多章节音频为 MP3 文件（异步执行，不阻塞主线程）。
     - group_size=0: 所有章节合并为一个MP3
     - group_size=N: 每N个章节合并为一个MP3
     - max_duration_minutes>0: 按时长分段，以章节为最小单位（不在章节中间截断）
@@ -121,7 +131,9 @@ async def merge_export_audio(
     project_root_path = project.project_root_path or getConfigPath()
 
     try:
-        result = line_service.merge_chapters_audio(
+        # 使用 asyncio.to_thread 将阻塞的合并操作放入线程池异步执行
+        result = await asyncio.to_thread(
+            line_service.merge_chapters_audio,
             project_root_path=project_root_path,
             project_id=req.project_id,
             chapter_ids=req.chapter_ids,
@@ -148,6 +160,222 @@ async def merge_export_audio(
 
         traceback.print_exc()
         return Res(data=None, code=500, message=f"合并失败: {str(e)}")
+
+
+@router.post("/merge-export/zip")
+async def merge_export_zip(
+    req: MergeZipRequest,
+    project_service: ProjectService = Depends(get_project_service),
+):
+    """
+    将合并导出的文件一键打包为 ZIP 下载。
+    支持选择是否包含字幕文件。
+    """
+    project = project_service.get_project(req.project_id)
+    if not project:
+        raise HTTPException(status_code=400, detail="项目不存在")
+
+    project_root_path = project.project_root_path or getConfigPath()
+
+    def _build_zip() -> io.BytesIO:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for file_info in req.files:
+                url = file_info.get("url", "")
+                name = file_info.get("name", "")
+                subtitles = file_info.get("subtitles", {})
+
+                # 从 static_url 反推本地文件路径
+                if url.startswith("/static/audio/"):
+                    rel = url[len("/static/audio/"):]
+                    local_path = os.path.join(project_root_path, rel)
+                    if os.path.isfile(local_path):
+                        zf.write(local_path, name)
+
+                # 打包字幕文件
+                if req.include_subtitles and subtitles:
+                    base_name = os.path.splitext(name)[0]
+                    for fmt, sub_url in subtitles.items():
+                        if sub_url and sub_url.startswith("/static/audio/"):
+                            sub_rel = sub_url[len("/static/audio/"):]
+                            sub_local = os.path.join(project_root_path, sub_rel)
+                            if os.path.isfile(sub_local):
+                                zf.write(sub_local, f"{base_name}.{fmt}")
+        buf.seek(0)
+        return buf
+
+    try:
+        zip_buf = await asyncio.to_thread(_build_zip)
+        return StreamingResponse(
+            zip_buf,
+            media_type="application/zip",
+            headers={"Content-Disposition": "attachment; filename=merged_audio.zip"},
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"打包失败: {str(e)}")
+
+
+@router.get("/merge-history/{project_id}", response_model=Res)
+async def get_merge_history(
+    project_id: int,
+    project_service: ProjectService = Depends(get_project_service),
+):
+    """
+    获取合并导出历史：扫描本地 merged_audio 目录中已有的 MP3 文件。
+    """
+    project = project_service.get_project(project_id)
+    if not project:
+        return Res(data=None, code=400, message="项目不存在")
+
+    project_root_path = project.project_root_path or getConfigPath()
+    merge_dir = os.path.join(project_root_path, str(project_id), "merged_audio")
+
+    if not os.path.isdir(merge_dir):
+        return Res(data={"files": []}, code=200, message="暂无合并历史")
+
+    def _scan_history():
+        result_files = []
+        for fname in sorted(os.listdir(merge_dir)):
+            if not fname.endswith(".mp3"):
+                continue
+            mp3_path = os.path.join(merge_dir, fname)
+            if not os.path.isfile(mp3_path):
+                continue
+
+            rel_path = os.path.relpath(mp3_path, project_root_path)
+            static_url = f"/static/audio/{rel_path}"
+
+            # 获取文件大小
+            file_size = os.path.getsize(mp3_path)
+            size_mb = round(file_size / 1024 / 1024, 2)
+
+            # 获取文件修改时间
+            import datetime
+            mtime = os.path.getmtime(mp3_path)
+            mtime_str = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
+
+            # 查找对应字幕文件
+            base_name = os.path.splitext(fname)[0]
+            subtitle_urls = {}
+            for fmt in ["srt", "ass"]:
+                sub_path = os.path.join(merge_dir, f"{base_name}.{fmt}")
+                if os.path.isfile(sub_path):
+                    sub_rel = os.path.relpath(sub_path, project_root_path)
+                    subtitle_urls[fmt] = f"/static/audio/{sub_rel}"
+
+            result_files.append({
+                "name": fname,
+                "url": static_url,
+                "size_mb": size_mb,
+                "modified_time": mtime_str,
+                "subtitles": subtitle_urls,
+            })
+
+        # 按修改时间倒序
+        result_files.sort(key=lambda x: x["modified_time"], reverse=True)
+        return result_files
+
+    try:
+        files = await asyncio.to_thread(_scan_history)
+        return Res(
+            data={"files": files},
+            code=200,
+            message=f"找到 {len(files)} 个合并历史文件",
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return Res(data=None, code=500, message=f"获取历史失败: {str(e)}")
+
+
+class DeleteMergeFileRequest(BaseModel):
+    """删除合并历史文件请求"""
+
+    project_id: int
+    file_name: str  # 要删除的文件名
+
+
+@router.post("/merge-history/delete", response_model=Res)
+async def delete_merge_history_file(
+    req: DeleteMergeFileRequest,
+    project_service: ProjectService = Depends(get_project_service),
+):
+    """
+    删除单个合并历史文件（包括对应的字幕文件）。
+    """
+    project = project_service.get_project(req.project_id)
+    if not project:
+        return Res(data=None, code=400, message="项目不存在")
+
+    project_root_path = project.project_root_path or getConfigPath()
+    merge_dir = os.path.join(project_root_path, str(req.project_id), "merged_audio")
+
+    if not os.path.isdir(merge_dir):
+        return Res(data=None, code=400, message="合并目录不存在")
+
+    def _delete_file():
+        deleted = []
+        base_name = os.path.splitext(req.file_name)[0]
+        # 删除MP3文件
+        mp3_path = os.path.join(merge_dir, req.file_name)
+        if os.path.isfile(mp3_path):
+            os.remove(mp3_path)
+            deleted.append(req.file_name)
+        # 删除对应字幕文件
+        for fmt in ["srt", "ass"]:
+            sub_path = os.path.join(merge_dir, f"{base_name}.{fmt}")
+            if os.path.isfile(sub_path):
+                os.remove(sub_path)
+                deleted.append(f"{base_name}.{fmt}")
+        return deleted
+
+    try:
+        deleted = await asyncio.to_thread(_delete_file)
+        if not deleted:
+            return Res(data=None, code=400, message=f"文件 {req.file_name} 不存在")
+        return Res(data={"deleted": deleted}, code=200, message=f"已删除 {len(deleted)} 个文件")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return Res(data=None, code=500, message=f"删除失败: {str(e)}")
+
+
+@router.post("/merge-history/clear/{project_id}", response_model=Res)
+async def clear_merge_history(
+    project_id: int,
+    project_service: ProjectService = Depends(get_project_service),
+):
+    """
+    一键清空所有合并历史文件（MP3 + 字幕）。
+    """
+    project = project_service.get_project(project_id)
+    if not project:
+        return Res(data=None, code=400, message="项目不存在")
+
+    project_root_path = project.project_root_path or getConfigPath()
+    merge_dir = os.path.join(project_root_path, str(project_id), "merged_audio")
+
+    if not os.path.isdir(merge_dir):
+        return Res(data={"deleted_count": 0}, code=200, message="合并目录不存在，无需清空")
+
+    def _clear_all():
+        deleted_count = 0
+        for fname in os.listdir(merge_dir):
+            fpath = os.path.join(merge_dir, fname)
+            if os.path.isfile(fpath) and fname.endswith((".mp3", ".srt", ".ass")):
+                os.remove(fpath)
+                deleted_count += 1
+        return deleted_count
+
+    try:
+        count = await asyncio.to_thread(_clear_all)
+        return Res(data={"deleted_count": count}, code=200, message=f"已清空 {count} 个文件")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return Res(data=None, code=500, message=f"清空失败: {str(e)}")
 
 
 @router.post(

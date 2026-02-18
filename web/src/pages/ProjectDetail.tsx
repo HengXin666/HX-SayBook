@@ -1,9 +1,12 @@
 import {
     ArrowLeftOutlined,
+    CloudDownloadOutlined,
     DeleteOutlined,
     DownloadOutlined,
     EditOutlined,
     FileTextOutlined,
+    HistoryOutlined,
+    LoadingOutlined,
     MergeCellsOutlined,
     PauseCircleOutlined,
     PlusOutlined,
@@ -171,6 +174,12 @@ export default function ProjectDetail() {
   const setMergeRangeStart = (v: number) => updateMergeRange('rangeStart', v);
   const setMergeRangeEnd = (v: number) => updateMergeRange('rangeEnd', v);
   const [mergeRangeLoading, setMergeRangeLoading] = useState(false);
+  const [mergeZipLoading, setMergeZipLoading] = useState(false);
+  const [mergeZipIncludeSubtitles, setMergeZipIncludeSubtitles] = useState(true);
+  // 合并历史
+  const [mergeHistoryModalOpen, setMergeHistoryModalOpen] = useState(false);
+  const [mergeHistoryFiles, setMergeHistoryFiles] = useState<{ name: string; url: string; size_mb: number; modified_time: string; subtitles?: Record<string, string> }[]>([]);
+  const [mergeHistoryLoading, setMergeHistoryLoading] = useState(false);
 
 
   // ==================== 播放状态 ====================
@@ -846,7 +855,7 @@ export default function ProjectDetail() {
     if (llmRes.data) setLlmProviders(llmRes.data);
     if (ttsRes.data) setTtsProviders(ttsRes.data);
     if (promptRes.data) setPrompts(promptRes.data);
-    settingsForm.setFieldsValues({
+    settingsForm.setFieldsValue({
       name: project.name,
       description: project.description,
       llm_provider_id: project.llm_provider_id,
@@ -856,7 +865,8 @@ export default function ProjectDetail() {
       is_precise_fill: project.is_precise_fill,
       passerby_voice_pool: project.passerby_voice_pool || [],
       language: project.language || 'zh',
-    });    setSettingsModalOpen(true);
+    });
+    setSettingsModalOpen(true);
   };
 
   const handleSaveSettings = async () => {
@@ -955,6 +965,120 @@ export default function ProjectDetail() {
     setMergeResults(null);
     setMergeModalOpen(true);
     mergeLazyList.init(); // 懒加载章节列表
+  };
+
+  // 一键打包下载ZIP
+  const handleMergeZipDownload = async () => {
+    if (!mergeResults || mergeResults.length === 0) return;
+    setMergeZipLoading(true);
+    try {
+      const resp = await lineApi.mergeExportZip({
+        project_id: projectId,
+        files: mergeResults.map(f => ({ url: f.url, name: f.name, subtitles: f.subtitles })),
+        include_subtitles: mergeZipIncludeSubtitles,
+      });
+      const blob = new Blob([resp as unknown as BlobPart], { type: 'application/zip' });
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = 'merged_audio.zip';
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(blobUrl);
+      message.success('ZIP 打包下载成功');
+    } catch {
+      message.error('ZIP 打包下载失败');
+    } finally {
+      setMergeZipLoading(false);
+    }
+  };
+
+  // 一键全部加载到播放器
+  const handleMergeLoadAll = (includeSubtitles: boolean) => {
+    if (!mergeResults || mergeResults.length === 0) return;
+    // 依次触发下载
+    mergeResults.forEach((file) => {
+      handleDownloadFile(file.url, file.name);
+      if (includeSubtitles) {
+        if (file.subtitles?.srt) handleDownloadFile(file.subtitles.srt, `${file.name.replace('.mp3', '')}.srt`);
+        if (file.subtitles?.ass) handleDownloadFile(file.subtitles.ass, `${file.name.replace('.mp3', '')}.ass`);
+      }
+    });
+    message.success(`已开始下载 ${mergeResults.length} 个文件${includeSubtitles ? '（含字幕）' : ''}`);
+  };
+
+  // 查看合并历史
+  const loadMergeHistory = async () => {
+    setMergeHistoryLoading(true);
+    try {
+      const res = await lineApi.mergeHistory(projectId);
+      if (res.code === 200 && res.data) {
+        const data = res.data as { files: { name: string; url: string; size_mb: number; modified_time: string; subtitles?: Record<string, string> }[] };
+        setMergeHistoryFiles(data.files || []);
+      } else {
+        setMergeHistoryFiles([]);
+      }
+    } catch {
+      message.error('获取合并历史失败');
+      setMergeHistoryFiles([]);
+    } finally {
+      setMergeHistoryLoading(false);
+    }
+  };
+
+  const openMergeHistory = async () => {
+    setMergeHistoryModalOpen(true);
+    await loadMergeHistory();
+  };
+
+  // 删除单个合并历史文件
+  const handleDeleteMergeHistoryFile = (fileName: string) => {
+    Modal.confirm({
+      title: '确认删除',
+      content: `确定要删除 "${fileName}" 及其对应字幕文件吗？此操作不可恢复。`,
+      okText: '确认删除',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          const res = await lineApi.deleteMergeHistoryFile({ project_id: projectId, file_name: fileName });
+          if (res.code === 200) {
+            message.success('删除成功');
+            await loadMergeHistory();
+          } else {
+            message.error(res.message || '删除失败');
+          }
+        } catch {
+          message.error('删除失败');
+        }
+      },
+    });
+  };
+
+  // 一键清空合并历史
+  const handleClearMergeHistory = () => {
+    Modal.confirm({
+      title: '确认清空',
+      content: '确定要清空所有合并历史文件吗？包括所有MP3和字幕文件，此操作不可恢复！',
+      okText: '确认清空',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          const res = await lineApi.clearMergeHistory(projectId);
+          if (res.code === 200) {
+            message.success(res.message || '已清空');
+            await loadMergeHistory();
+          } else {
+            message.error(res.message || '清空失败');
+          }
+        } catch {
+          message.error('清空失败');
+        }
+      },
+    });
   };
 
   const handleMergeExport = async () => {
@@ -1982,11 +2106,13 @@ export default function ProjectDetail() {
         title="合并导出 MP3"
         open={mergeModalOpen}
         onCancel={() => setMergeModalOpen(false)}
-        width={640}
+        width={700}
         footer={
           mergeResults ? [
+            <Button key="history" icon={<HistoryOutlined />} onClick={openMergeHistory}>历史记录</Button>,
             <Button key="close" onClick={() => setMergeModalOpen(false)}>关闭</Button>,
           ] : [
+            <Button key="history" icon={<HistoryOutlined />} onClick={openMergeHistory}>历史记录</Button>,
             <Button key="cancel" onClick={() => setMergeModalOpen(false)}>取消</Button>,
             <Button key="ok" type="primary" loading={mergeLoading} onClick={handleMergeExport}>
               开始合并
@@ -1997,8 +2123,38 @@ export default function ProjectDetail() {
       >
         {mergeResults ? (
           <div>
-            <Typography.Text type="success" strong>合并完成！共生成 {mergeResults.length} 个文件：</Typography.Text>
-            <div style={{ marginTop: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <Typography.Text type="success" strong>合并完成！共生成 {mergeResults.length} 个文件：</Typography.Text>
+              <Space>
+                <Checkbox checked={mergeZipIncludeSubtitles} onChange={(e) => setMergeZipIncludeSubtitles(e.target.checked)}>
+                  <span style={{ fontSize: 12 }}>含字幕</span>
+                </Checkbox>
+                <Button
+                  type="primary"
+                  size="small"
+                  icon={mergeZipLoading ? <LoadingOutlined /> : <CloudDownloadOutlined />}
+                  loading={mergeZipLoading}
+                  onClick={handleMergeZipDownload}
+                >
+                  一键打包 ZIP
+                </Button>
+                <Button
+                  size="small"
+                  icon={<DownloadOutlined />}
+                  onClick={() => handleMergeLoadAll(false)}
+                >
+                  全部下载
+                </Button>
+                <Button
+                  size="small"
+                  icon={<FileTextOutlined />}
+                  onClick={() => handleMergeLoadAll(true)}
+                >
+                  全部下载(含字幕)
+                </Button>
+              </Space>
+            </div>
+            <div style={{ maxHeight: 400, overflowY: 'auto' }}>
               {mergeResults.map((file, idx) => (
                 <Card key={idx} size="small" style={{ marginBottom: 8 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -2022,12 +2178,12 @@ export default function ProjectDetail() {
                         音频
                       </Button>
                       {file.subtitles?.srt && (
-                        <Button size="small" icon={<FileTextOutlined />} onClick={() => handleDownloadFile(file.subtitles!.srt)}>
+                        <Button size="small" icon={<FileTextOutlined />} onClick={() => handleDownloadFile(file.subtitles!.srt, `${file.name.replace('.mp3', '')}.srt`)}>
                           SRT
                         </Button>
                       )}
                       {file.subtitles?.ass && (
-                        <Button size="small" icon={<FileTextOutlined />} onClick={() => handleDownloadFile(file.subtitles!.ass)}>
+                        <Button size="small" icon={<FileTextOutlined />} onClick={() => handleDownloadFile(file.subtitles!.ass, `${file.name.replace('.mp3', '')}.ass`)}>
                           ASS
                         </Button>
                       )}
@@ -2165,6 +2321,73 @@ export default function ProjectDetail() {
                 </Typography.Text>
               </div>
             )}
+          </div>
+        )}
+      </Modal>
+
+      {/* 合并历史弹窗 */}
+      <Modal
+        title="合并导出历史"
+        open={mergeHistoryModalOpen}
+        onCancel={() => setMergeHistoryModalOpen(false)}
+        width={640}
+        footer={[
+          mergeHistoryFiles.length > 0 && (
+            <Button key="clear" danger onClick={handleClearMergeHistory}>一键清空</Button>
+          ),
+          <Button key="close" onClick={() => setMergeHistoryModalOpen(false)}>关闭</Button>,
+        ].filter(Boolean)}
+        destroyOnClose
+      >
+        {mergeHistoryLoading ? (
+          <div style={{ textAlign: 'center', padding: 32 }}>
+            <LoadingOutlined style={{ fontSize: 24 }} />
+            <div style={{ marginTop: 8 }}>加载中...</div>
+          </div>
+        ) : mergeHistoryFiles.length === 0 ? (
+          <Empty description="暂无合并历史" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+        ) : (
+          <div style={{ maxHeight: 450, overflowY: 'auto' }}>
+            {mergeHistoryFiles.map((file, idx) => (
+              <Card key={idx} size="small" style={{ marginBottom: 8 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <Typography.Text strong>{file.name}</Typography.Text>
+                    <Tag color="green" style={{ marginLeft: 8 }}>{file.size_mb} MB</Tag>
+                    <br />
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      修改时间：{file.modified_time}
+                    </Typography.Text>
+                  </div>
+                  <Space>
+                    <Button
+                      type="primary"
+                      size="small"
+                      icon={<DownloadOutlined />}
+                      onClick={() => handleDownloadFile(file.url, file.name)}
+                    >
+                      音频
+                    </Button>
+                    {file.subtitles?.srt && (
+                      <Button size="small" icon={<FileTextOutlined />} onClick={() => handleDownloadFile(file.subtitles!.srt, `${file.name.replace('.mp3', '')}.srt`)}>
+                        SRT
+                      </Button>
+                    )}
+                    {file.subtitles?.ass && (
+                      <Button size="small" icon={<FileTextOutlined />} onClick={() => handleDownloadFile(file.subtitles!.ass, `${file.name.replace('.mp3', '')}.ass`)}>
+                        ASS
+                      </Button>
+                    )}
+                    <Button
+                      danger
+                      size="small"
+                      icon={<DeleteOutlined />}
+                      onClick={() => handleDeleteMergeHistoryFile(file.name)}
+                    />
+                  </Space>
+                </div>
+              </Card>
+            ))}
           </div>
         )}
       </Modal>

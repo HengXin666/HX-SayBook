@@ -42,6 +42,7 @@ from py.services.voice_service import VoiceService
 from py.services.multi_emotion_voice_service import MultiEmotionVoiceService
 from py.repositories.multi_emotion_voice_repository import MultiEmotionVoiceRepository
 from py.core.tts_runtime import emotion_text_to_vector
+from py.core.tts_engine import MultiTTSEngine
 
 logger = logging.getLogger("hx-saybook.batch")
 
@@ -800,7 +801,27 @@ async def _do_batch_tts(
         }
     )
 
-    # ===== 音色预上传：一次性检查并上传所有涉及的音色 =====
+    # ===== 获取 TTS 端点数量，确定并发数 =====
+    tts_concurrency = 1
+    if tts_provider_id:
+        db_tmp = SessionLocal()
+        try:
+            tts_prov = _get_services(db_tmp)["line"].tts_provider_repository.get_by_id(tts_provider_id)
+            if tts_prov and tts_prov.api_base_url:
+                tts_concurrency = len([u.strip() for u in tts_prov.api_base_url.split(",") if u.strip()])
+        finally:
+            db_tmp.close()
+
+    if tts_concurrency > 1:
+        await manager.broadcast(
+            {
+                "event": "batch_tts_log",
+                "project_id": project_id,
+                "log": f"🚀 检测到 {tts_concurrency} 个 TTS 端点，启用并发模式",
+            }
+        )
+
+    # ===== 音色预上传：并发上传所有涉及的音色到所有 TTS 实例 =====
     if reference_paths_set and tts_provider_id:
         await manager.broadcast(
             {
@@ -813,11 +834,12 @@ async def _do_batch_tts(
         try:
             services = _get_services(db)
             line_svc = services["line"]
-            for ref_path in reference_paths_set:
+            loop = asyncio.get_running_loop()
+
+            async def _upload_one(ref_path):
                 if cancel_event.is_set():
-                    break
+                    return
                 try:
-                    loop = asyncio.get_running_loop()
                     await loop.run_in_executor(
                         None,
                         line_svc.ensure_audio_uploaded,
@@ -826,6 +848,8 @@ async def _do_batch_tts(
                     )
                 except Exception as e:
                     logger.warning(f"音色预上传失败: {ref_path}, {e}")
+
+            await asyncio.gather(*[_upload_one(rp) for rp in reference_paths_set])
         finally:
             db.close()
 
@@ -871,21 +895,93 @@ async def _do_batch_tts(
                 }
             )
 
-            for line_idx, line in enumerate(valid_lines):
-                # 每条台词前检查取消信号
-                if cancel_event.is_set():
-                    break
+            # ===== 并发 TTS 生成：Semaphore 控制并发数 =====
+            tts_semaphore = asyncio.Semaphore(tts_concurrency)
 
-                try:
-                    # 跳过已配音的台词（status=done 且音频文件存在）
-                    if (
-                        skip_done
-                        and line.status == "done"
-                        and line.audio_path
-                        and os.path.exists(line.audio_path)
-                    ):
-                        done_lines += 1
-                        skipped_lines += 1
+            # 预先收集每条台词的元数据（角色、音色、情绪），避免在并发中访问同一个 db session
+            line_meta_list = []  # [(line, line_idx, reference_path, emo_vector, skip)]
+            for line_idx, line in enumerate(valid_lines):
+                # 跳过已配音的台词
+                if (
+                    skip_done
+                    and line.status == "done"
+                    and line.audio_path
+                    and os.path.exists(line.audio_path)
+                ):
+                    line_meta_list.append((line, line_idx, None, None, "skipped"))
+                    continue
+
+                role = role_svc.get_role(line.role_id)
+                if not role or not role.default_voice_id:
+                    line_meta_list.append((line, line_idx, None, None, "no_voice"))
+                    continue
+
+                voice = voice_svc.get_voice(role.default_voice_id)
+                reference_path = voice.reference_path
+
+                emotion = (
+                    emotion_svc.get_emotion(line.emotion_id)
+                    if line.emotion_id
+                    else None
+                )
+                strength = (
+                    strength_svc.get_strength(line.strength_id)
+                    if line.strength_id
+                    else None
+                )
+                emo_vector = emotion_text_to_vector(
+                    emotion.name if emotion else "平静",
+                    strength.name if strength else "中等",
+                )
+                line_meta_list.append((line, line_idx, reference_path, emo_vector, None))
+
+            async def _process_single_line(line, line_idx, reference_path, emo_vector, skip_reason):
+                """并发处理单条台词的协程"""
+                nonlocal done_lines, skipped_lines
+
+                if cancel_event.is_set():
+                    return
+
+                if skip_reason == "skipped":
+                    done_lines += 1
+                    skipped_lines += 1
+                    await manager.broadcast(
+                        {
+                            "event": "batch_tts_line_progress",
+                            "project_id": project_id,
+                            "chapter_id": chapter_id,
+                            "line_id": line.id,
+                            "line_index": line_idx + 1,
+                            "line_total": len(valid_lines),
+                            "overall_done": done_lines,
+                            "overall_total": total_lines,
+                            "progress": round(
+                                (done_lines / max(total_lines, 1)) * 100
+                            ),
+                            "status": "skipped",
+                            "log": f"⏭️ 台词 {line.id} 已配音，跳过",
+                        }
+                    )
+                    return
+
+                if skip_reason == "no_voice":
+                    await manager.broadcast(
+                        {
+                            "event": "batch_tts_log",
+                            "project_id": project_id,
+                            "chapter_id": chapter_id,
+                            "line_id": line.id,
+                            "log": f"⚠️ 台词 {line.id} 角色未绑定音色，跳过",
+                        }
+                    )
+                    done_lines += 1
+                    return
+
+                async with tts_semaphore:
+                    if cancel_event.is_set():
+                        return
+
+                    try:
                         await manager.broadcast(
                             {
                                 "event": "batch_tts_line_progress",
@@ -896,127 +992,85 @@ async def _do_batch_tts(
                                 "line_total": len(valid_lines),
                                 "overall_done": done_lines,
                                 "overall_total": total_lines,
-                                "progress": round(
-                                    (done_lines / max(total_lines, 1)) * 100
-                                ),
-                                "status": "skipped",
-                                "log": f"⏭️ 台词 {line.id} 已配音，跳过",
+                                "progress": round((done_lines / max(total_lines, 1)) * 100),
+                                "status": "processing",
+                                "log": f"🔊 生成台词 {line.id}: {line.text_content[:30]}...",
                             }
                         )
-                        continue
 
-                    role = role_svc.get_role(line.role_id)
-                    if not role or not role.default_voice_id:
+                        # 异步调用 TTS（使用 no_check 异步版本，音色已预上传）
+                        await line_svc.generate_audio_no_check_async(
+                            reference_path,
+                            project.tts_provider_id,
+                            line.text_content,
+                            None,  # emo_text
+                            emo_vector,
+                            line.audio_path,
+                        )
+
+                        # TTS 重新生成后，清理旧的原始音频备份
+                        line_svc._clean_orig_backup(line.audio_path)
+
+                        # 速度调节
+                        if (
+                            speed != 1.0
+                            and line.audio_path
+                            and os.path.exists(line.audio_path)
+                        ):
+                            loop = asyncio.get_running_loop()
+                            await loop.run_in_executor(
+                                None,
+                                line_svc.process_audio_ffmpeg,
+                                line.audio_path,
+                                speed,
+                            )
+
+                        line_svc.update_line(line.id, {"status": "done", "speed": speed})
+                        done_lines += 1
+
                         await manager.broadcast(
                             {
-                                "event": "batch_tts_log",
+                                "event": "batch_tts_line_progress",
                                 "project_id": project_id,
                                 "chapter_id": chapter_id,
                                 "line_id": line.id,
-                                "log": f"⚠️ 台词 {line.id} 角色未绑定音色，跳过",
+                                "line_index": line_idx + 1,
+                                "line_total": len(valid_lines),
+                                "overall_done": done_lines,
+                                "overall_total": total_lines,
+                                "progress": round((done_lines / max(total_lines, 1)) * 100),
+                                "status": "done",
+                                "log": f"✅ 台词 {line.id} 配音完成",
                             }
                         )
+
+                    except Exception as e:
                         done_lines += 1
-                        continue
+                        logger.error(f"TTS生成失败: {e}")
+                        try:
+                            line_svc.update_line(line.id, {"status": "failed"})
+                        except Exception:
+                            pass
+                        await manager.broadcast(
+                            {
+                                "event": "batch_tts_line_progress",
+                                "project_id": project_id,
+                                "chapter_id": chapter_id,
+                                "line_id": line.id,
+                                "overall_done": done_lines,
+                                "overall_total": total_lines,
+                                "progress": round((done_lines / max(total_lines, 1)) * 100),
+                                "status": "failed",
+                                "log": f"❌ 台词 {line.id} 配音失败: {e}",
+                            }
+                        )
 
-                    voice = voice_svc.get_voice(role.default_voice_id)
-                    reference_path = voice.reference_path
-
-                    # 获取情绪向量
-                    emotion = (
-                        emotion_svc.get_emotion(line.emotion_id)
-                        if line.emotion_id
-                        else None
-                    )
-                    strength = (
-                        strength_svc.get_strength(line.strength_id)
-                        if line.strength_id
-                        else None
-                    )
-                    emo_vector = emotion_text_to_vector(
-                        emotion.name if emotion else "平静",
-                        strength.name if strength else "中等",
-                    )
-
-                    await manager.broadcast(
-                        {
-                            "event": "batch_tts_line_progress",
-                            "project_id": project_id,
-                            "chapter_id": chapter_id,
-                            "line_id": line.id,
-                            "line_index": line_idx + 1,
-                            "line_total": len(valid_lines),
-                            "overall_done": done_lines,
-                            "overall_total": total_lines,
-                            "progress": round((done_lines / max(total_lines, 1)) * 100),
-                            "status": "processing",
-                            "log": f"🔊 生成台词 {line.id}: {line.text_content[:30]}...",
-                        }
-                    )
-
-                    # 执行 TTS（使用 no_check 版本，音色已预上传）
-                    loop = asyncio.get_running_loop()
-                    await loop.run_in_executor(
-                        None,
-                        line_svc.generate_audio_no_check,
-                        reference_path,
-                        project.tts_provider_id,
-                        line.text_content,
-                        None,  # emo_text
-                        emo_vector,
-                        line.audio_path,
-                    )
-
-                    # TTS 重新生成后，清理旧的原始音频备份
-                    line_svc._clean_orig_backup(line.audio_path)
-
-                    # 速度调节
-                    if (
-                        speed != 1.0
-                        and line.audio_path
-                        and os.path.exists(line.audio_path)
-                    ):
-                        line_svc.process_audio_ffmpeg(line.audio_path, speed=speed)
-
-                    line_svc.update_line(line.id, {"status": "done", "speed": speed})
-                    done_lines += 1
-
-                    await manager.broadcast(
-                        {
-                            "event": "batch_tts_line_progress",
-                            "project_id": project_id,
-                            "chapter_id": chapter_id,
-                            "line_id": line.id,
-                            "line_index": line_idx + 1,
-                            "line_total": len(valid_lines),
-                            "overall_done": done_lines,
-                            "overall_total": total_lines,
-                            "progress": round((done_lines / max(total_lines, 1)) * 100),
-                            "status": "done",
-                            "log": f"✅ 台词 {line.id} 配音完成",
-                        }
-                    )
-
-                except Exception as e:
-                    done_lines += 1
-                    logger.error(f"TTS生成失败: {e}")
-                    try:
-                        line_svc.update_line(line.id, {"status": "failed"})
-                    except Exception:
-                        pass
-                    await manager.broadcast(
-                        {
-                            "event": "batch_tts_line_progress",
-                            "project_id": project_id,
-                            "chapter_id": chapter_id,
-                            "line_id": line.id,
-                            "overall_done": done_lines,
-                            "overall_total": total_lines,
-                            "progress": round((done_lines / max(total_lines, 1)) * 100),
-                            "status": "failed",
-                            "log": f"❌ 台词 {line.id} 配音失败: {e}",
-                        }
-                    )
+            # 并发执行所有台词的 TTS 生成
+            tts_tasks = [
+                asyncio.create_task(_process_single_line(line, idx, ref, emo, skip))
+                for line, idx, ref, emo, skip in line_meta_list
+            ]
+            await asyncio.gather(*tts_tasks, return_exceptions=True)
 
             await manager.broadcast(
                 {
@@ -1570,91 +1624,109 @@ async def _autopilot_tts_single_chapter(
             }
         )
 
-        done_count = 0
+        # 获取 TTS 端点并发数
+        tts_prov = line_svc.tts_provider_repository.get_by_id(project.tts_provider_id)
+        ap_concurrency = 1
+        if tts_prov and tts_prov.api_base_url:
+            ap_concurrency = len([u.strip() for u in tts_prov.api_base_url.split(",") if u.strip()])
+        ap_semaphore = asyncio.Semaphore(ap_concurrency)
+
+        # 预收集元数据
+        line_meta_list = []
         for line_idx, line in enumerate(valid_lines):
+            role = role_svc.get_role(line.role_id)
+            if not role or not role.default_voice_id:
+                line_meta_list.append((line, line_idx, None, None, "no_voice"))
+                continue
+            voice = voice_svc.get_voice(role.default_voice_id)
+            emotion = emotion_svc.get_emotion(line.emotion_id) if line.emotion_id else None
+            strength = strength_svc.get_strength(line.strength_id) if line.strength_id else None
+            emo_vector = emotion_text_to_vector(
+                emotion.name if emotion else "平静",
+                strength.name if strength else "中等",
+            )
+            line_meta_list.append((line, line_idx, voice.reference_path, emo_vector, None))
+
+        done_count = 0
+
+        async def _ap_process_line(line, line_idx, reference_path, emo_vector, skip_reason):
+            nonlocal done_count, has_failure
             if cancel_event.is_set():
-                return False
+                return
 
-            try:
-                role = role_svc.get_role(line.role_id)
-                if not role or not role.default_voice_id:
-                    await manager.broadcast(
-                        {
-                            "event": "autopilot_tts_log",
-                            "project_id": project_id,
-                            "chapter_id": chapter_id,
-                            "log": f"⚠️ 台词 {line.id} 角色未绑定音色，跳过",
-                        }
-                    )
-                    done_count += 1
-                    continue
-
-                voice = voice_svc.get_voice(role.default_voice_id)
-                reference_path = voice.reference_path
-
-                emotion = (
-                    emotion_svc.get_emotion(line.emotion_id)
-                    if line.emotion_id
-                    else None
-                )
-                strength = (
-                    strength_svc.get_strength(line.strength_id)
-                    if line.strength_id
-                    else None
-                )
-                emo_vector = emotion_text_to_vector(
-                    emotion.name if emotion else "平静",
-                    strength.name if strength else "中等",
-                )
-
-                await manager.broadcast(
-                    {
-                        "event": "autopilot_tts_line",
-                        "project_id": project_id,
-                        "chapter_id": chapter_id,
-                        "line_index": line_idx + 1,
-                        "line_total": len(valid_lines),
-                        "log": f"🔊 [{line_idx+1}/{len(valid_lines)}] {line.text_content[:30]}...",
-                    }
-                )
-
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(
-                    None,
-                    line_svc.generate_audio,
-                    reference_path,
-                    project.tts_provider_id,
-                    line.text_content,
-                    None,
-                    emo_vector,
-                    line.audio_path,
-                )
-
-                # TTS 重新生成后，清理旧的原始音频备份
-                line_svc._clean_orig_backup(line.audio_path)
-
-                if speed != 1.0 and line.audio_path and os.path.exists(line.audio_path):
-                    line_svc.process_audio_ffmpeg(line.audio_path, speed=speed)
-
-                line_svc.update_line(line.id, {"status": "done", "speed": speed})
-                done_count += 1
-
-            except Exception as e:
-                done_count += 1
-                has_failure = True
-                logger.error(f"TTS生成失败: {e}")
-                try:
-                    line_svc.update_line(line.id, {"status": "failed"})
-                except Exception:
-                    pass
+            if skip_reason == "no_voice":
                 await manager.broadcast(
                     {
                         "event": "autopilot_tts_log",
                         "project_id": project_id,
                         "chapter_id": chapter_id,
-                        "log": f"❌ 台词 {line.id} 配音失败: {e}",
+                        "log": f"⚠️ 台词 {line.id} 角色未绑定音色，跳过",
                     }
                 )
+                done_count += 1
+                return
+
+            async with ap_semaphore:
+                if cancel_event.is_set():
+                    return
+                try:
+                    await manager.broadcast(
+                        {
+                            "event": "autopilot_tts_line",
+                            "project_id": project_id,
+                            "chapter_id": chapter_id,
+                            "line_index": line_idx + 1,
+                            "line_total": len(valid_lines),
+                            "log": f"🔊 [{line_idx+1}/{len(valid_lines)}] {line.text_content[:30]}...",
+                        }
+                    )
+
+                    await line_svc.generate_audio_no_check_async(
+                        reference_path,
+                        project.tts_provider_id,
+                        line.text_content,
+                        None,
+                        emo_vector,
+                        line.audio_path,
+                    )
+
+                    line_svc._clean_orig_backup(line.audio_path)
+
+                    if speed != 1.0 and line.audio_path and os.path.exists(line.audio_path):
+                        loop = asyncio.get_running_loop()
+                        await loop.run_in_executor(
+                            None,
+                            line_svc.process_audio_ffmpeg,
+                            line.audio_path,
+                            speed,
+                        )
+
+                    line_svc.update_line(line.id, {"status": "done", "speed": speed})
+                    done_count += 1
+
+                except Exception as e:
+                    done_count += 1
+                    has_failure = True
+                    logger.error(f"TTS生成失败: {e}")
+                    try:
+                        line_svc.update_line(line.id, {"status": "failed"})
+                    except Exception:
+                        pass
+                    await manager.broadcast(
+                        {
+                            "event": "autopilot_tts_log",
+                            "project_id": project_id,
+                            "chapter_id": chapter_id,
+                            "log": f"❌ 台词 {line.id} 配音失败: {e}",
+                        }
+                    )
+
+        # 并发执行所有台词
+        ap_tasks = [
+            asyncio.create_task(_ap_process_line(line, idx, ref, emo, skip))
+            for line, idx, ref, emo, skip in line_meta_list
+        ]
+        await asyncio.gather(*ap_tasks, return_exceptions=True)
 
         await manager.broadcast(
             {

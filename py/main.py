@@ -98,7 +98,27 @@ app.mount("/static/audio", StaticFiles(directory=data_dir), name="audio")
 # ============================================================
 # 常量
 # ============================================================
-WORKERS = 1
+# TTS worker 数量：启动时动态检测第一个 TTS 供应商的端点数量
+# 多端点(逗号分隔)时，启动对应数量的 worker 以并发消费队列
+def _detect_tts_workers() -> int:
+    """检测 TTS 供应商端点数量，作为 worker 并发数"""
+    try:
+        db = SessionLocal()
+        from py.repositories.tts_provider_repository import TTSProviderRepository
+        repo = TTSProviderRepository(db)
+        providers = repo.get_all()
+        db.close()
+        if providers:
+            # 取第一个供应商的端点数
+            url = getattr(providers[0], "api_base_url", "") or ""
+            count = len([u.strip() for u in url.split(",") if u.strip()])
+            if count > 1:
+                return count
+    except Exception:
+        pass
+    return 1
+
+WORKERS = _detect_tts_workers()
 QUEUE_CAPACITY = 0
 
 # ============================================================
@@ -183,6 +203,10 @@ async def startup_event():
         app.state.tts_workers = [
             asyncio.create_task(tts_worker(app)) for _ in range(WORKERS)
         ]
+        if WORKERS > 1:
+            logger.info(f"🚀 TTS 并发模式：检测到 {WORKERS} 个端点，已启动 {WORKERS} 个 worker")
+        else:
+            logger.info("🎙️ TTS 单实例模式：启动 1 个 worker")
     except Exception as e:
         logger.exception("初始化队列失败: %s", e)
 

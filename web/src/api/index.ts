@@ -55,6 +55,15 @@ export const lineApi = {
   exportAudio: (chapterId: number, single?: boolean) => api.get<unknown, Res>(`/lines/export-audio/${chapterId}`, { params: { single } }),
   correctSubtitle: (chapterId: number) => api.post<unknown, Res>(`/lines/correct-subtitle/${chapterId}`),
   mergeExport: (data: { project_id: number; chapter_ids: number[]; group_size: number; max_duration_minutes: number }) => api.post<unknown, Res>('/lines/merge-export', data),
+  /** 一键打包下载合并结果为ZIP（支持可选包含字幕） */
+  mergeExportZip: (data: { project_id: number; files: { url: string; name: string; subtitles?: Record<string, string> }[]; include_subtitles: boolean }) =>
+    api.post('/lines/merge-export/zip', data, { responseType: 'blob' }),
+  /** 获取合并导出历史 */
+  mergeHistory: (projectId: number) => api.get<unknown, Res>(`/lines/merge-history/${projectId}`),
+  /** 删除单个合并历史文件 */
+  deleteMergeHistoryFile: (data: { project_id: number; file_name: string }) => api.post<unknown, Res>('/lines/merge-history/delete', data),
+  /** 一键清空合并历史 */
+  clearMergeHistory: (projectId: number) => api.post<unknown, Res>(`/lines/merge-history/clear/${projectId}`),
   /** 单章节一键导出（音频MP3 + SRT/ASS字幕） */
   exportChapter: (chapterId: number) => api.get<unknown, Res>(`/lines/export-chapter/${chapterId}`),
 };
