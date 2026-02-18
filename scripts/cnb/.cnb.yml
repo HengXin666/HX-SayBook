@@ -1,0 +1,43 @@
+# .cnb.yml
+# CNB 平台配置 - HX-SayBook TTS 推理服务
+# 支持选择启动 Index-TTS 或 LuxTTS 容器
+#
+# 选项 1: Index-TTS (中文 + 日语，显存约 4GB)
+# 选项 2: LuxTTS / ZipVoice (轻量，显存约 1GB，8并发)
+$:
+  vscode:
+    # ========== 选项 1: Index-TTS（中文 + 日语，显存约 4GB）==========
+    - docker:
+        image: hengxin666/index-tts-2-ja:latest
+      title: "Index-TTS (中文+日语)"
+      runner:
+        tags: cnb:arch:amd64:gpu
+      services:
+        - vscode
+        - docker
+      env:
+        CNB_WELCOME_CMD: |
+          echo "🎤 Index-TTS 服务启动中..."
+          bash start.sh
+      stages:
+        - name: start
+          script: echo 'start'
+
+    # ========== 选项 2: LuxTTS / ZipVoice（轻量，显存约 1GB，8并发）==========
+    - docker:
+        image: hengxin666/lux-tts:latest
+      title: "LuxTTS 轻量版 (8并发, ~1GB显存)"
+      runner:
+        tags: cnb:arch:amd64:gpu
+      services:
+        - vscode
+        - docker
+      env:
+        LUX_TTS_WORKERS: "8"
+        LUX_TTS_MODEL: "zipvoice"
+        CNB_WELCOME_CMD: |
+          echo "🎤 LuxTTS (ZipVoice) 服务启动中..."
+          bash start_lux.sh
+      stages:
+        - name: start
+          script: echo 'start'

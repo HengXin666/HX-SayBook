@@ -412,6 +412,46 @@ async def upload_audio(
 
 
 # ============================================================
+# GET /v1/all_urls — 获取所有 TTS 实例的 URL 列表（一键复制）
+# 用途：用户在推理端启动多个实例后，通过此接口一次性获取所有 URL，
+#       然后在 Web 端"一键导入 TTS 链接"中粘贴使用。
+#
+# 支持两种模式：
+#   1. 环境变量 TTS_ALL_URLS（逗号分隔）手动指定所有兄弟实例地址
+#   2. 环境变量 TTS_INSTANCE_COUNT + TTS_BASE_PORT 自动生成连续端口列表
+#   3. 都不设置时，仅返回当前实例自身的地址
+# ============================================================
+@app.get("/v1/all_urls")
+async def get_all_urls():
+    urls: list[str] = []
+
+    # 模式 1：环境变量直接指定所有 URL
+    env_urls = os.environ.get("TTS_ALL_URLS", "").strip()
+    if env_urls:
+        urls = [u.strip() for u in env_urls.split(",") if u.strip()]
+    else:
+        # 模式 2：根据实例数量 + 基础端口自动生成
+        instance_count = int(os.environ.get("TTS_INSTANCE_COUNT", "0"))
+        base_port = int(os.environ.get("TTS_BASE_PORT", str(args.port)))
+        if instance_count > 1:
+            # 获取外部可访问的主机名
+            host = os.environ.get("TTS_PUBLIC_HOST", "127.0.0.1")
+            urls = [f"http://{host}:{base_port + i}" for i in range(instance_count)]
+        else:
+            # 模式 3：仅返回自身
+            host = os.environ.get("TTS_PUBLIC_HOST", "127.0.0.1")
+            urls = [f"http://{host}:{args.port}"]
+
+    # 返回结果：urls 列表 + 预格式化的逗号分隔文本（方便一键复制）
+    return {
+        "urls": urls,
+        "count": len(urls),
+        "copy_text": ", ".join(urls),
+        "engine": "Index-TTS",
+    }
+
+
+# ============================================================
 # 启动服务
 # ============================================================
 if __name__ == "__main__":

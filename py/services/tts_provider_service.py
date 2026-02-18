@@ -63,6 +63,20 @@ class TTSProviderService:
         )
         self.repository.create(po)
 
+    def create_default_lux_tts_provider(self):
+        """创建默认的 LuxTTS (ZipVoice) 供应商
+        LuxTTS 是基于 ZipVoice 的轻量级 TTS 引擎，显存占用约 1GB，
+        API 接口与 Index-TTS 完全兼容，可无缝切换。
+        """
+        if self.repository.get_by_name("lux_tts"):
+            return
+        if self.repository.get_by_id(2):
+            return
+        po = TTSProviderPO(
+            name="lux_tts", id=2, status=1, api_base_url="", api_key=""
+        )
+        self.repository.create(po)
+
     def _test_single_url(self, url: str) -> tuple[bool, str]:
         """测试单个 TTS 端点连接"""
         url = url.rstrip("/")

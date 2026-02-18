@@ -217,6 +217,7 @@ async def startup_event():
         try:
             tts_service = get_tts_service(db)
             tts_service.create_default_tts_provider()
+            tts_service.create_default_lux_tts_provider()
         except Exception as e:
             logger.debug("默认 TTS provider: %s", e)
 

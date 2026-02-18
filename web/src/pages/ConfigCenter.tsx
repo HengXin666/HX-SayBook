@@ -1,4 +1,4 @@
-import { ApiOutlined, DeleteOutlined, EditOutlined, MinusCircleOutlined, PlusOutlined } from '@ant-design/icons';
+import { ApiOutlined, CopyOutlined, DeleteOutlined, EditOutlined, ImportOutlined, MinusCircleOutlined, PlusOutlined } from '@ant-design/icons';
 import { Button, Card, Form, Input, message, Modal, Popconfirm, Space, Table, Tabs, Tag, Typography } from 'antd';
 import { useEffect, useState } from 'react';
 import { llmProviderApi, ttsProviderApi } from '../api';
@@ -17,6 +17,8 @@ export default function ConfigCenter() {
   const [ttsForm] = Form.useForm();
   const [testingLLM, setTestingLLM] = useState(false);
   const [testingTTS, setTestingTTS] = useState(false);
+  const [importModalOpen, setImportModalOpen] = useState(false);
+  const [importText, setImportText] = useState('');
 
   useEffect(() => {
     fetchLLMProviders();
@@ -119,6 +121,44 @@ export default function ConfigCenter() {
     await ttsProviderApi.delete(id);
     message.success('已删除');
     fetchTTSProviders();
+  };
+
+  // 一键导入 TTS 链接（解析多行 URL 填入表单）
+  const handleImportUrls = () => {
+    const lines = importText
+      .split(/[\n,;]+/)
+      .map((line) => line.trim())
+      .filter((line) => line && (line.startsWith('http://') || line.startsWith('https://')));
+    if (lines.length === 0) {
+      message.warning('未识别到有效的 URL（需以 http:// 或 https:// 开头）');
+      return;
+    }
+    // 将解析出的 URL 设置到表单的 urls 字段
+    ttsForm.setFieldsValue({
+      urls: lines.map((url) => ({ url })),
+    });
+    setImportModalOpen(false);
+    setImportText('');
+    message.success(`已导入 ${lines.length} 个 TTS 端点`);
+  };
+
+  // 一键复制所有 TTS URL
+  const handleCopyAllUrls = () => {
+    const allUrls = ttsProviders
+      .map((p) => p.api_base_url || '')
+      .join(',')
+      .split(',')
+      .map((u) => u.trim())
+      .filter(Boolean);
+    if (allUrls.length === 0) {
+      message.warning('当前没有已配置的 TTS URL');
+      return;
+    }
+    const text = allUrls.join('\n');
+    navigator.clipboard.writeText(text).then(
+      () => message.success(`已复制 ${allUrls.length} 个 TTS URL 到剪贴板`),
+      () => message.error('复制失败，请手动复制'),
+    );
   };
 
   // TTS 测试连接
@@ -224,7 +264,12 @@ export default function ConfigCenter() {
             label: '🎵 TTS 配置',
             children: (
               <Card style={{ background: '#1e1e2e', borderColor: '#313244' }}
-                extra={<Button type="primary" icon={<PlusOutlined />} onClick={() => openTTSModal()}>新增 TTS</Button>}>
+                extra={
+                  <Space>
+                    <Button icon={<CopyOutlined />} onClick={handleCopyAllUrls}>复制所有 URL</Button>
+                    <Button type="primary" icon={<PlusOutlined />} onClick={() => openTTSModal()}>新增 TTS</Button>
+                  </Space>
+                }>
                 <Table dataSource={ttsProviders} columns={ttsColumns} rowKey="id" size="small" pagination={false} />
               </Card>
             ),
@@ -308,21 +353,56 @@ export default function ConfigCenter() {
                   </Form.Item>
                 ))}
                 <Form.Item>
-                  <Button
-                    type="dashed"
-                    onClick={() => add({ url: '' })}
-                    block
-                    icon={<PlusOutlined />}
-                    style={{ borderColor: '#585b70' }}
-                  >
-                    添加端点（多个端点可并发加速）
-                  </Button>
+                  <Space style={{ width: '100%' }} direction="vertical">
+                    <Button
+                      type="dashed"
+                      onClick={() => add({ url: '' })}
+                      block
+                      icon={<PlusOutlined />}
+                      style={{ borderColor: '#585b70' }}
+                    >
+                      添加端点（多个端点可并发加速）
+                    </Button>
+                    <Button
+                      type="dashed"
+                      onClick={() => setImportModalOpen(true)}
+                      block
+                      icon={<ImportOutlined />}
+                      style={{ borderColor: '#585b70' }}
+                    >
+                      一键导入 TTS 链接
+                    </Button>
+                  </Space>
                 </Form.Item>
               </>
             )}
           </Form.List>
           <Form.Item name="api_key" label="API Key"><Input.Password placeholder="可选" /></Form.Item>
         </Form>
+      </Modal>
+
+      {/* 一键导入 TTS 链接 Modal */}
+      <Modal
+        title="📋 一键导入 TTS 链接"
+        open={importModalOpen}
+        onCancel={() => { setImportModalOpen(false); setImportText(''); }}
+        onOk={handleImportUrls}
+        okText="导入"
+        cancelText="取消"
+      >
+        <div style={{ marginBottom: 12, color: '#a6adc8' }}>
+          每行一个 URL，也支持逗号或分号分隔。导入后将替换当前表单中的端点列表。
+        </div>
+        <Input.TextArea
+          rows={8}
+          value={importText}
+          onChange={(e) => setImportText(e.target.value)}
+          placeholder={'http://192.168.1.100:8000\nhttp://192.168.1.101:8000\nhttp://192.168.1.102:8000'}
+          style={{ fontFamily: 'monospace' }}
+        />
+        <div style={{ marginTop: 8, color: '#585b70', fontSize: 12 }}>
+          提示：粘贴推理端的 URL 列表即可，会自动过滤无效行
+        </div>
       </Modal>
     </div>
   );
