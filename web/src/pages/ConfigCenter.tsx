@@ -1,5 +1,5 @@
-import { ApiOutlined, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
-import { Alert, Button, Card, Form, Input, message, Modal, Popconfirm, Space, Table, Tabs, Tag, Typography } from 'antd';
+import { ApiOutlined, DeleteOutlined, EditOutlined, MinusCircleOutlined, PlusOutlined } from '@ant-design/icons';
+import { Button, Card, Form, Input, message, Modal, Popconfirm, Space, Table, Tabs, Tag, Typography } from 'antd';
 import { useEffect, useState } from 'react';
 import { llmProviderApi, ttsProviderApi } from '../api';
 import { useAppStore } from '../store';
@@ -72,11 +72,18 @@ export default function ConfigCenter() {
   const handleSaveTTS = async () => {
     try {
       const values = await ttsForm.validateFields();
+      // 将 urls 数组转为逗号分隔的字符串存储
+      const urls: string[] = (values.urls || []).map((item: { url: string }) => item.url?.trim()).filter(Boolean);
+      const payload = {
+        name: values.name,
+        api_base_url: urls.join(', '),
+        api_key: values.api_key,
+      };
       if (editTTS) {
-        await ttsProviderApi.update(editTTS.id, values);
+        await ttsProviderApi.update(editTTS.id, payload);
         message.success('TTS 更新成功');
       } else {
-        await ttsProviderApi.create(values);
+        await ttsProviderApi.create(payload);
         message.success('TTS 创建成功');
       }
       setTtsModalOpen(false);
@@ -86,6 +93,26 @@ export default function ConfigCenter() {
     } catch {
       message.error('操作失败');
     }
+  };
+
+  // 打开 TTS 编辑弹窗时，将逗号分隔的 api_base_url 转为 urls 数组
+  const openTTSModal = (record?: TTSProvider) => {
+    if (record) {
+      setEditTTS(record);
+      const urls = record.api_base_url
+        ? record.api_base_url.split(',').map((u: string) => u.trim()).filter(Boolean)
+        : [''];
+      ttsForm.setFieldsValue({
+        name: record.name,
+        api_key: record.api_key,
+        urls: urls.map((url: string) => ({ url })),
+      });
+    } else {
+      setEditTTS(null);
+      ttsForm.resetFields();
+      ttsForm.setFieldsValue({ urls: [{ url: '' }] });
+    }
+    setTtsModalOpen(true);
   };
 
   const handleDeleteTTS = async (id: number) => {
@@ -99,7 +126,14 @@ export default function ConfigCenter() {
     try {
       const values = await ttsForm.validateFields();
       setTestingTTS(true);
-      const res = await ttsProviderApi.test(values);
+      // 将 urls 数组转为逗号分隔字符串提交测试
+      const urls: string[] = (values.urls || []).map((item: { url: string }) => item.url?.trim()).filter(Boolean);
+      const payload = {
+        name: values.name,
+        api_base_url: urls.join(', '),
+        api_key: values.api_key,
+      };
+      const res = await ttsProviderApi.test(payload);
       if (res.code === 200) {
         message.success(res.message || 'TTS 连接测试成功 ✅');
       } else {
@@ -159,7 +193,7 @@ export default function ConfigCenter() {
       title: '操作', key: 'action', width: 120,
       render: (_: unknown, record: TTSProvider) => (
         <Space>
-          <Button size="small" icon={<EditOutlined />} onClick={() => { setEditTTS(record); ttsForm.setFieldsValue(record); setTtsModalOpen(true); }} />
+          <Button size="small" icon={<EditOutlined />} onClick={() => openTTSModal(record)} />
           <Popconfirm title="确定删除？" onConfirm={() => handleDeleteTTS(record.id)}>
             <Button size="small" danger icon={<DeleteOutlined />} />
           </Popconfirm>
@@ -190,7 +224,7 @@ export default function ConfigCenter() {
             label: '🎵 TTS 配置',
             children: (
               <Card style={{ background: '#1e1e2e', borderColor: '#313244' }}
-                extra={<Button type="primary" icon={<PlusOutlined />} onClick={() => { setEditTTS(null); ttsForm.resetFields(); setTtsModalOpen(true); }}>新增 TTS</Button>}>
+                extra={<Button type="primary" icon={<PlusOutlined />} onClick={() => openTTSModal()}>新增 TTS</Button>}>
                 <Table dataSource={ttsProviders} columns={ttsColumns} rowKey="id" size="small" pagination={false} />
               </Card>
             ),
@@ -239,44 +273,54 @@ export default function ConfigCenter() {
       >
         <Form form={ttsForm} layout="vertical">
           <Form.Item name="name" label="名称" rules={[{ required: true }]}><Input placeholder="如: Index-TTS" /></Form.Item>
-          <Form.Item
-            name="api_base_url"
-            label="API 地址"
-            rules={[{ required: true }]}
-            tooltip="填写多个地址（逗号分隔）可启用并发 TTS，显著加速批量配音"
-            extra={
-              <span style={{ color: '#6c7086', fontSize: 12 }}>
-                💡 多个实例用英文逗号分隔，如：http://host1:8000, http://host2:8000
-              </span>
-            }
-          >
-            <Input.TextArea
-              rows={2}
-              placeholder={"http://127.0.0.1:8000\n多个地址用英文逗号分隔，可实现并发加速"}
-            />
-          </Form.Item>
-          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.api_base_url !== cur.api_base_url}>
-            {() => {
-              const val = ttsForm.getFieldValue('api_base_url') || '';
-              const urls = val.split(',').map((u: string) => u.trim()).filter(Boolean);
-              if (urls.length > 1) {
-                return (
-                  <Alert
-                    type="info"
-                    showIcon
-                    style={{ marginBottom: 16 }}
-                    message={`已配置 ${urls.length} 个 TTS 端点，批量配音将以 ${urls.length}x 并发执行`}
-                    description={
-                      <ul style={{ margin: '4px 0', paddingLeft: 20 }}>
-                        {urls.map((u: string, i: number) => <li key={i}>{u}</li>)}
-                      </ul>
-                    }
-                  />
-                );
-              }
-              return null;
-            }}
-          </Form.Item>
+          <Form.List name="urls" initialValue={[{ url: '' }]}>
+            {(fields, { add, remove }) => (
+              <>
+                <div style={{ marginBottom: 8 }}>
+                  <Space>
+                    <span style={{ fontWeight: 500 }}>API 端点</span>
+                    {fields.length > 1 && (
+                      <Tag color="blue">{fields.length} 个端点（{fields.length}x 并发）</Tag>
+                    )}
+                  </Space>
+                </div>
+                {fields.map((field) => (
+                  <Form.Item key={field.key} style={{ marginBottom: 8 }}>
+                    <Space align="baseline" style={{ width: '100%' }}>
+                      <Form.Item
+                        {...field}
+                        name={[field.name, 'url']}
+                        rules={[{ required: true, message: '请输入 API 地址' }]}
+                        noStyle
+                      >
+                        <Input
+                          placeholder="http://127.0.0.1:8000"
+                          style={{ width: 380 }}
+                        />
+                      </Form.Item>
+                      {fields.length > 1 && (
+                        <MinusCircleOutlined
+                          style={{ color: '#f38ba8', fontSize: 16, cursor: 'pointer' }}
+                          onClick={() => remove(field.name)}
+                        />
+                      )}
+                    </Space>
+                  </Form.Item>
+                ))}
+                <Form.Item>
+                  <Button
+                    type="dashed"
+                    onClick={() => add({ url: '' })}
+                    block
+                    icon={<PlusOutlined />}
+                    style={{ borderColor: '#585b70' }}
+                  >
+                    添加端点（多个端点可并发加速）
+                  </Button>
+                </Form.Item>
+              </>
+            )}
+          </Form.List>
           <Form.Item name="api_key" label="API Key"><Input.Password placeholder="可选" /></Form.Item>
         </Form>
       </Modal>
