@@ -29,7 +29,7 @@ const menuItems = [
   { key: '/voice-debug', icon: <BugOutlined />, label: '语音调试' },
 ];
 
-const APP_VERSION = 'v2.7.0';
+const APP_VERSION = 'v2.8.0';
 
 function App() {
   const navigate = useNavigate();
