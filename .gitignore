@@ -27,6 +27,9 @@ output/
 previews/
 debug/
 
+# FFmpeg 二进制（体积过大）
+py/core/ffmpeg/ffmpeg
+
 
 
 # IDE
