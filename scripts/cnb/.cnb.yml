@@ -7,9 +7,9 @@
 $:
   vscode:
     # ========== 选项 1: Index-TTS（中文 + 日语，显存约 4GB）==========
-    - docker:
+    - title: "Index-TTS (中文+日语)"
+      docker:
         image: hengxin666/index-tts-2-ja:latest
-      title: "Index-TTS (中文+日语)"
       runner:
         tags: cnb:arch:amd64:gpu
       services:
@@ -24,9 +24,9 @@ $:
           script: echo 'start'
 
     # ========== 选项 2: LuxTTS / ZipVoice（轻量，显存约 1GB，8并发）==========
-    - docker:
+    - title: "LuxTTS 轻量版 (8并发, ~1GB显存)"
+      docker:
         image: hengxin666/lux-tts:latest
-      title: "LuxTTS 轻量版 (8并发, ~1GB显存)"
       runner:
         tags: cnb:arch:amd64:gpu
       services:
