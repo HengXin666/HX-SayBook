@@ -23,6 +23,10 @@ HOST=${LUX_TTS_HOST:-0.0.0.0}
 PORT=${LUX_TTS_PORT:-8000}
 MODEL_NAME=${LUX_TTS_MODEL:-zipvoice}
 
+# 确保 Python 和动态库路径正确（docker exec 进容器时 Dockerfile ENV 可能未继承）
+export PYTHONPATH="/app/zipvoice:${PYTHONPATH:-}"
+export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:/usr/local/lib:${LD_LIBRARY_PATH:-}"
+
 # 确保目录存在
 mkdir -p "$PROMPT_PATH" "$OUTPUT_PATH"
 
@@ -37,15 +41,36 @@ fi
 # 切换到 zipvoice 目录
 cd "$ZIPVOICE_PATH" || exit 1
 
-# ====== 检查环境 ======
+# ====== 检查环境（仅检查并报告，所有依赖应在 Dockerfile 构建时已安装） ======
 echo ""
 echo "[检查] Python 环境..."
 python3 --version
-echo "[检查] ZipVoice 模块..."
-python3 -c "import zipvoice; print('  ✅ ZipVoice 模块可用')" 2>/dev/null || {
-    echo "  ⚠️ ZipVoice 模块不可用，尝试安装..."
-    pip install -e .
-}
+python3 -c "import torch; print('  PyTorch', torch.__version__)"
+
+echo "[检查] 核心依赖..."
+python3 -c "import torchaudio; print('  ✅ torchaudio', torchaudio.__version__)" 2>/dev/null || \
+    echo "  ❌ torchaudio 不可用（请检查 Dockerfile）"
+
+python3 -c "import torchcodec; print('  ✅ torchcodec', torchcodec.__version__)" 2>/dev/null || \
+    echo "  ⚠️ torchcodec 不可用（将使用 soundfile 后端）"
+
+python3 -c "import soundfile; print('  ✅ soundfile', soundfile.__version__)" 2>/dev/null || \
+    echo "  ⚠️ soundfile 不可用"
+
+if command -v ffmpeg &>/dev/null; then
+    echo "  ✅ FFmpeg: $(ffmpeg -version 2>&1 | head -1)"
+else
+    echo "  ⚠️ FFmpeg 未安装（torchcodec 需要）"
+fi
+
+echo ""
+echo "[检查] ZipVoice 推理模块..."
+python3 -c "from zipvoice.bin import infer_zipvoice; print('  ✅ zipvoice.bin.infer_zipvoice 可导入')" 2>/dev/null || \
+    echo "  ⚠️ zipvoice.bin.infer_zipvoice 不可导入（将依赖 PYTHONPATH）"
+
+python3 -m zipvoice.bin.infer_zipvoice --help > /dev/null 2>&1 && \
+    echo "  ✅ python3 -m zipvoice.bin.infer_zipvoice 可用" || \
+    echo "  ⚠️ python3 -m zipvoice.bin.infer_zipvoice 不可用"
 
 # ====== 启动 API 服务 ======
 echo ""

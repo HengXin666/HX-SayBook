@@ -1,0 +1,19 @@
+# .cnb.yml
+# CNB 平台配置 - Index-TTS 推理服务（中文 + 日语，显存约 4GB）
+$:
+  vscode:
+    - name: "Index-TTS (中文+日语)"
+      docker:
+        image: hengxin666/index-tts-2-ja:latest
+      runner:
+        tags: cnb:arch:amd64:gpu
+      services:
+        - vscode
+        - docker
+      env:
+        CNB_WELCOME_CMD: |
+          echo "🎤 Index-TTS 服务启动中..."
+          bash start.sh
+      stages:
+        - name: start
+          script: echo 'start'

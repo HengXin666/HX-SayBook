@@ -1,0 +1,21 @@
+# .cnb.yml
+# CNB 平台配置 - LuxTTS / ZipVoice 推理服务（轻量，显存约 1GB，8并发）
+$:
+  vscode:
+    - name: "LuxTTS 轻量版 (8并发, ~1GB显存)"
+      docker:
+        image: hengxin666/lux-tts:latest
+      runner:
+        tags: cnb:arch:amd64:gpu
+      services:
+        - vscode
+        - docker
+      env:
+        LUX_TTS_WORKERS: "8"
+        LUX_TTS_MODEL: "zipvoice"
+        CNB_WELCOME_CMD: |
+          echo "🎤 LuxTTS (ZipVoice) 服务启动中..."
+          bash start_lux.sh
+      stages:
+        - name: start
+          script: echo 'start'

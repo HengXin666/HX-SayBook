@@ -28,6 +28,23 @@ if ! command -v docker &> /dev/null; then
     exit 1
 fi
 
+# 检查 Docker daemon 是否运行
+echo ""
+echo "[0/3] 检查 Docker daemon 状态..."
+if ! docker info &> /dev/null; then
+    echo "❌ Docker daemon 未运行！"
+    echo ""
+    echo "  请先启动 Docker 服务："
+    echo "    sudo systemctl start docker"
+    echo ""
+    echo "  或手动启动："
+    echo "    sudo dockerd &"
+    echo ""
+    echo "  启动后重新运行本脚本。"
+    exit 1
+fi
+echo "  ✅ Docker daemon 运行中"
+
 # 检查是否已登录 Docker Hub
 echo ""
 echo "[1/3] 检查 Docker Hub 登录状态..."
