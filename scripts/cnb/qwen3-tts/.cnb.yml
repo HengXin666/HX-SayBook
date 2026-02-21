@@ -1,0 +1,22 @@
+# .cnb.yml
+# CNB 平台配置 - Qwen3-TTS 推理服务（基于 Qwen2.5-Omni）
+$:
+  vscode:
+    - name: "Qwen3-TTS (Qwen2.5-Omni-7B)"
+      docker:
+        image: hengxin666/qwen3-tts:latest
+      runner:
+        tags: cnb:arch:amd64:gpu
+      services:
+        - vscode
+        - docker
+      env:
+        QWEN3_TTS_MODEL: "Qwen/Qwen2.5-Omni-7B"
+        QWEN3_TTS_DEVICE: "cuda"
+        QWEN3_TTS_DTYPE: "auto"
+        CNB_WELCOME_CMD: |
+          echo "🎤 Qwen3-TTS 服务启动中..."
+          bash start_qwen3.sh
+      stages:
+        - name: start
+          script: echo 'start'

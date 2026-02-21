@@ -77,6 +77,21 @@ class TTSProviderService:
         )
         self.repository.create(po)
 
+    def create_default_qwen3_tts_provider(self):
+        """创建默认的 Qwen3-TTS 供应商
+        基于 Qwen2.5-Omni 多模态模型的 TTS 能力，超低延迟(97ms)，
+        支持 10 种语言，中文 WER 2.12%，说话人相似度 0.89。
+        API 接口与 Index-TTS 完全兼容，可无缝切换。
+        """
+        if self.repository.get_by_name("qwen3_tts"):
+            return
+        if self.repository.get_by_id(3):
+            return
+        po = TTSProviderPO(
+            name="qwen3_tts", id=3, status=1, api_base_url="", api_key=""
+        )
+        self.repository.create(po)
+
     def _test_single_url(self, url: str) -> tuple[bool, str]:
         """测试单个 TTS 端点连接"""
         url = url.rstrip("/")
