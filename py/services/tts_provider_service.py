@@ -77,6 +77,21 @@ class TTSProviderService:
         )
         self.repository.create(po)
 
+    def create_default_fish_speech_provider(self):
+        """创建默认的 Fish-Speech 1.5 供应商（极速模式）
+        Fish-Speech 1.5 极速语音合成，RTF ~0.1，延迟 <150ms，
+        单说话人模式，仅追求速度。自动从文本推断情绪。
+        API 接口与 Index-TTS 完全兼容，可无缝切换。
+        """
+        if self.repository.get_by_name("fish_speech"):
+            return
+        if self.repository.get_by_id(3):
+            return
+        po = TTSProviderPO(
+            name="fish_speech", id=3, status=1, api_base_url="", api_key=""
+        )
+        self.repository.create(po)
+
     def _test_single_url(self, url: str) -> tuple[bool, str]:
         """测试单个 TTS 端点连接"""
         url = url.rstrip("/")

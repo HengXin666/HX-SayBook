@@ -1,0 +1,21 @@
+# .cnb.yml
+# CNB 平台配置 - Fish-Speech 1.5 极速模式（单说话人，显存约 4GB）
+$:
+  vscode:
+    - name: "Fish-Speech 1.5 极速模式 (单说话人, ~4GB显存)"
+      docker:
+        image: hengxin666/fish-speech:latest
+      runner:
+        tags: cnb:arch:amd64:gpu
+      services:
+        - vscode
+        - docker
+      env:
+        FISH_TTS_MODE: "proxy"
+        FISH_API_URL: "http://localhost:8080"
+        CNB_WELCOME_CMD: |
+          echo "🐟 Fish-Speech 1.5 极速模式启动中..."
+          bash start_fish.sh
+      stages:
+        - name: start
+          script: echo 'start'
