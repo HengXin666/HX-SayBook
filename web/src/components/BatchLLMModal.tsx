@@ -96,16 +96,7 @@ export default function BatchLLMModal({ open, onClose, projectId, onComplete, on
     }
   }, [open, projectId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 懒加载列表加载后，自动选中有内容的章节（仅首次初始化时）
-  useEffect(() => {
-    if (open && lazyList.chapters.length > 0 && hasInitRef.current && selectedIds.length === 0 && !running) {
-      const validIds = lazyList.chapters.filter((c) => c.has_content).map((c) => c.id);
-      setSelectedIds(prev => {
-        const combined = new Set([...prev, ...validIds]);
-        return Array.from(combined);
-      });
-    }
-  }, [lazyList.chapters]); // eslint-disable-line react-hooks/exhaustive-deps
+  // （不再自动选中加载的章节，用户需要通过"应用范围"或"选中可见的"按钮主动选择）
 
   // WebSocket 事件监听：始终监听，不依赖 open
   useEffect(() => {
@@ -209,18 +200,33 @@ export default function BatchLLMModal({ open, onClose, projectId, onComplete, on
     }
   }, [projectId]);
 
-  // 范围选择（从持久化配置中读取，仅首次无保存时才设默认）
+  // 章节号范围（使用 order_index）
+  const [orderMin, setOrderMin] = useState<number>(1);
+  const [orderMax, setOrderMax] = useState<number>(1);
   const rangeStart = persistedConfig.rangeStart;
-  const rangeEnd = persistedConfig.rangeEnd || lazyList.total || 1;
+  const rangeEnd = persistedConfig.rangeEnd || orderMax || 1;
   const setRangeStart = (v: number) => updateConfig('rangeStart', v);
   const setRangeEnd = (v: number) => updateConfig('rangeEnd', v);
 
-  // 仅当持久化中没有保存过范围（rangeEnd 为 0）时，设置默认值
+  // 获取章节号范围
   useEffect(() => {
-    if (open && lazyList.total > 0 && persistedConfig.rangeEnd === 0) {
-      updateConfig('rangeEnd', lazyList.total);
+    if (open && projectId) {
+      chapterApi.getOrderIndexRange(projectId).then((res) => {
+        if (res.data) {
+          const minVal = res.data.min_order_index ?? 1;
+          const maxVal = res.data.max_order_index ?? 1;
+          setOrderMin(minVal);
+          setOrderMax(maxVal);
+          if (persistedConfig.rangeEnd === 0) {
+            updateConfig('rangeEnd', maxVal);
+          }
+          if (persistedConfig.rangeStart < minVal) {
+            updateConfig('rangeStart', minVal);
+          }
+        }
+      });
     }
-  }, [open, lazyList.total]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, projectId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSelectAll = () => {
     // 全选：选中当前已加载列表中有内容的章节
@@ -236,20 +242,20 @@ export default function BatchLLMModal({ open, onClose, projectId, onComplete, on
     setSelectedIds([]);
   };
 
-  // 按范围选择：通过后端接口直接获取范围内所有有内容的章节 ID
+  // 按章节号范围选择：通过后端接口直接获取范围内所有有内容的章节 ID
   const [rangeLoading, setRangeLoading] = useState(false);
   const handleSelectRange = useCallback(async () => {
-    const start = Math.max(1, rangeStart);
-    const end = Math.min(lazyList.total, rangeEnd);
+    const start = Math.max(orderMin, rangeStart);
+    const end = Math.min(orderMax, rangeEnd);
     if (start > end) {
-      message.warning('起始章节不能大于结束章节');
+      message.warning('起始章节号不能大于结束章节号');
       return;
     }
 
     setRangeLoading(true);
     try {
-      // 通过后端接口获取范围内所有有内容的章节 ID
-      const res = await chapterApi.getIdsByRange(projectId, { start, end, has_content_only: true });
+      // 通过后端接口按章节号范围获取有内容的章节 ID
+      const res = await chapterApi.getIdsByOrderRange(projectId, { start_order: start, end_order: end, has_content_only: true });
       if (res.data && res.data.length > 0) {
         setSelectedIds(res.data);
         message.success(`已选中第 ${start} ~ ${end} 章中 ${res.data.length} 个有内容的章节`);
@@ -257,15 +263,17 @@ export default function BatchLLMModal({ open, onClose, projectId, onComplete, on
         setSelectedIds([]);
         message.warning(`第 ${start} ~ ${end} 章中没有有内容的章节`);
       }
-      // 清空列表并跳转到 L 位置
+      // 清空列表并跳转到对应位置
       lazyList.reset();
-      await lazyList.jumpToIndex(start);
+      const posRes = await chapterApi.getIdsByOrderRange(projectId, { start_order: orderMin, end_order: start });
+      const position = posRes.data ? posRes.data.length : 1;
+      await lazyList.jumpToIndex(position);
     } catch {
       message.error('获取范围章节失败');
     } finally {
       setRangeLoading(false);
     }
-  }, [rangeStart, rangeEnd, lazyList, projectId]);
+  }, [rangeStart, rangeEnd, orderMin, orderMax, lazyList, projectId]);
 
   const statusColor: Record<string, string> = {
     pending: 'default',
@@ -409,20 +417,20 @@ export default function BatchLLMModal({ open, onClose, projectId, onComplete, on
           <Text style={{ color: '#a6adc8', fontSize: 12, whiteSpace: 'nowrap' }}>从第</Text>
           <InputNumber
             size="small"
-            min={1}
-            max={lazyList.total || 1}
+            min={orderMin}
+            max={orderMax}
             value={rangeStart}
-            onChange={(v) => setRangeStart(v ?? 1)}
+            onChange={(v) => setRangeStart(v ?? orderMin)}
             style={{ width: 80 }}
             disabled={running}
           />
           <Text style={{ color: '#a6adc8', fontSize: 12, whiteSpace: 'nowrap' }}>章 到 第</Text>
           <InputNumber
             size="small"
-            min={1}
-            max={lazyList.total || 1}
+            min={orderMin}
+            max={orderMax}
             value={rangeEnd}
-            onChange={(v) => setRangeEnd(v ?? lazyList.total)}
+            onChange={(v) => setRangeEnd(v ?? orderMax)}
             style={{ width: 80 }}
             disabled={running}
           />
@@ -455,7 +463,7 @@ export default function BatchLLMModal({ open, onClose, projectId, onComplete, on
           )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {lazyList.chapters.map((ch) => {
-              const globalIndex = lazyList.offsetStart + lazyList.chapters.indexOf(ch) + 1;
+              const chapterNum = ch.order_index ?? '?';
               const cs = chapterStatuses.get(ch.id);
               return (
                 <div key={ch.id} data-chapter-item style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -470,7 +478,7 @@ export default function BatchLLMModal({ open, onClose, projectId, onComplete, on
                     }}
                     disabled={running}
                   >
-                    <span style={{ color: '#585b70', fontSize: 11, marginRight: 4 }}>#{globalIndex}</span>
+                    <span style={{ color: '#585b70', fontSize: 11, marginRight: 4 }}>第{chapterNum}章</span>
                     <span style={{ color: '#cdd6f4' }}>{ch.title}</span>
                     {!ch.has_content && (
                       <Tag color="warning" style={{ marginLeft: 8, fontSize: 10 }}>无内容</Tag>

@@ -1,6 +1,14 @@
 """
-Index-TTS API Server
-为 HX-SayBook 提供 REST API 接口，桥接 Index-TTS 推理引擎。
+Index-TTS 2.5 API Server
+为 HX-SayBook 提供 REST API 接口，桥接 Index-TTS 2.5 推理引擎。
+
+Index-TTS 2.5 相比 2.0 的主要改进：
+  - Zipformer 替代 U-DiT（S2M 模块），延迟从 0.078s 降至 0.017s
+  - 语义编码帧率从 50Hz 降至 25Hz，Token 序列长度减半
+  - RTF 从 0.232 提升至 0.119（快 2.28 倍）
+  - 新增多语言支持（中/英/日/西班牙语）
+  - 新增 GRPO 强化学习优化发音准确性
+  - 新增语速控制参数
 
 接口列表:
   GET  /              - 服务信息（用于连接测试）
@@ -41,7 +49,7 @@ from typing import List, Optional
 # ============================================================
 # 命令行参数
 # ============================================================
-parser = argparse.ArgumentParser(description="Index-TTS API Server")
+parser = argparse.ArgumentParser(description="Index-TTS 2.5 API Server")
 parser.add_argument("--host", type=str, default="0.0.0.0", help="监听地址")
 parser.add_argument("--port", type=int, default=8000, help="监听端口")
 parser.add_argument(
@@ -73,8 +81,9 @@ os.makedirs(OUTPUTS_DIR, exist_ok=True)
 # 初始化 TTS 模型（切换模式：同一时间只加载一个语言的模型）
 # ============================================================
 print("=" * 50)
-print("  Index-TTS API Server 启动中...")
+print("  Index-TTS 2.5 API Server 启动中...")
 print("  模式: 单模型切换（节省显存）")
+print("  改进: Zipformer S2M / 25Hz 语义编码 / GRPO 优化")
 print("=" * 50)
 
 # 检查中文模型文件
@@ -129,6 +138,12 @@ else:
     print(f"   请从 https://huggingface.co/Jmica/IndexTTS-2-Japanese 下载模型")
 
 from indextts.infer_v2 import IndexTTS2
+
+# 尝试导入 2.5 版本标识（如果可用）
+try:
+    from indextts import __version__ as indextts_version
+except ImportError:
+    indextts_version = "2.x"
 
 
 class TTSModelManager:
@@ -200,7 +215,7 @@ class TTSModelManager:
             device=args.device,
         )
         self._current_lang = lang
-        print(f"✅ {lang_name}模型加载完成")
+        print(f"✅ {lang_name}模型加载完成 (版本: {indextts_version})")
 
     def get_tts(self, lang: str) -> IndexTTS2:
         """
@@ -224,7 +239,7 @@ class TTSModelManager:
 
 # 初始化模型管理器，启动时默认加载中文模型
 tts_manager = TTSModelManager()
-print("\n📦 初始加载中文模型...")
+print(f"\n📦 初始加载中文模型... (Index-TTS {indextts_version})")
 tts_manager.get_tts("zh")
 
 # 兼容旧代码
@@ -233,7 +248,7 @@ tts = tts_manager
 # ============================================================
 # FastAPI 应用
 # ============================================================
-app = FastAPI(title="Index-TTS API", version="1.0.0")
+app = FastAPI(title="Index-TTS 2.5 API", version="2.5.0")
 
 
 def _safe_filename(name: str) -> str:
@@ -249,8 +264,16 @@ def _safe_filename(name: str) -> str:
 @app.get("/")
 async def root():
     return {
-        "name": "Index-TTS API Server",
-        "version": "1.0.0",
+        "name": "Index-TTS 2.5 API Server",
+        "version": "2.5.0",
+        "engine_version": indextts_version,
+        "features": [
+            "Zipformer S2M (4.6x faster)",
+            "25Hz semantic codec (2x shorter tokens)",
+            "GRPO pronunciation optimization",
+            "Multi-language (zh/en/ja/es)",
+            "Speed control",
+        ],
         "endpoints": [
             "/v1/models",
             "/v2/synthesize",
@@ -268,9 +291,18 @@ async def get_models():
     return {
         "models": [
             {
-                "id": "index-tts-v2",
-                "name": "IndexTTS2",
-                "description": "IndexTTS2 语音合成模型",
+                "id": "index-tts-v2.5",
+                "name": "IndexTTS2.5",
+                "version": indextts_version,
+                "description": "IndexTTS 2.5 语音合成模型 (Zipformer S2M, 25Hz 语义编码, RTF 0.119)",
+                "features": {
+                    "s2m_backbone": "Zipformer",
+                    "semantic_fps": 25,
+                    "rtf": 0.119,
+                    "languages": ["zh", "en", "ja", "es"],
+                    "emotion_control": True,
+                    "speed_control": True,
+                },
             }
         ]
     }
@@ -284,7 +316,8 @@ class SynthesizeRequest(BaseModel):
     audio_path: str  # 参考音频文件名（上传时的原始路径或文件名）
     emo_text: Optional[str] = None
     emo_vector: Optional[List[float]] = None
-    language: Optional[str] = None  # 语言: "zh"(中文) / "ja"(日语), 默认自动检测
+    language: Optional[str] = None  # 语言: "zh"(中文) / "ja"(日语) / "en"(英语) / "es"(西班牙语), 默认自动检测
+    speed: Optional[float] = None  # 语速控制: 0.5~2.0, 默认 1.0（2.5 新增）
 
 
 @app.post("/v2/synthesize")
@@ -330,6 +363,11 @@ async def synthesize(req: SynthesizeRequest):
             "output_path": output_path,
             "verbose": False,
         }
+
+        # 语速控制（Index-TTS 2.5 新增）
+        if req.speed is not None and req.speed != 1.0:
+            kwargs["speed"] = max(0.5, min(2.0, req.speed))
+            print(f"[SPEED] 语速: {kwargs['speed']}")
 
         # 情绪向量优先（需要先归一化：应用偏置因子 + 总和约束）
         if req.emo_vector is not None:
@@ -447,7 +485,7 @@ async def get_all_urls():
         "urls": urls,
         "count": len(urls),
         "copy_text": ", ".join(urls),
-        "engine": "Index-TTS",
+        "engine": "Index-TTS 2.5",
     }
 
 
@@ -455,13 +493,15 @@ async def get_all_urls():
 # 启动服务
 # ============================================================
 if __name__ == "__main__":
-    print(f"\n🚀 Index-TTS API Server 运行在 http://{args.host}:{args.port}")
+    print(f"\n🚀 Index-TTS 2.5 API Server 运行在 http://{args.host}:{args.port}")
     print(f"   模式: 单模型切换（节省显存）")
+    print(f"   引擎版本: {indextts_version}")
     print(f"   中文模型目录: {args.model_dir}")
     print(
         f"   日语模型目录: {args.ja_model_dir} ({'✅ 可用' if ja_available else '❌ 不可用'})"
     )
     print(f"   当前加载: {tts_manager.current_lang}")
     print(f"   参考音频目录: {PROMPTS_DIR}")
+    print(f"   改进: Zipformer S2M / 25Hz 语义编码 / GRPO / 语速控制")
     print()
     uvicorn.run(app, host=args.host, port=args.port)

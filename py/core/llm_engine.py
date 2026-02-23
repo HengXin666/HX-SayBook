@@ -115,19 +115,29 @@ class LLMEngine:
                 else:
                     raise e
 
-    def save_load_json(self, json_str: str):
+    def save_load_json(self, json_str: str, _depth: int = 0):
         """解析JSON，支持自动提取<result>标签内容（同步）"""
+        if _depth > 3:
+            raise ValueError("JSON 修复重试次数过多，请检查 LLM 输出")
+
         try:
             json_str = self._extract_result_tag(json_str)
         except ValueError:
             pass
 
         try:
-            return json.loads(json_str)
+            result = json.loads(json_str)
+            # 校验返回类型：如果解析结果是字符串，尝试二次解析（LLM 可能返回了被包裹的 JSON 字符串）
+            if isinstance(result, str):
+                try:
+                    result = json.loads(result)
+                except (json.JSONDecodeError, TypeError):
+                    raise json.JSONDecodeError("解析结果为字符串而非对象/数组", json_str, 0)
+            return result
         except json.JSONDecodeError:
             prompt = get_auto_fix_json_prompt(json_str)
             res = self.generate_text(prompt)
-            return self.save_load_json(res)
+            return self.save_load_json(res, _depth + 1)
 
     def generate_smart_text(self, prompt: str) -> str:
         """
@@ -198,19 +208,29 @@ class LLMEngine:
                 else:
                     raise e
 
-    async def save_load_json_async(self, json_str: str):
+    async def save_load_json_async(self, json_str: str, _depth: int = 0):
         """解析JSON，支持自动提取<result>标签内容（异步版）"""
+        if _depth > 3:
+            raise ValueError("JSON 修复重试次数过多，请检查 LLM 输出")
+
         try:
             json_str = self._extract_result_tag(json_str)
         except ValueError:
             pass
 
         try:
-            return json.loads(json_str)
+            result = json.loads(json_str)
+            # 校验返回类型：如果解析结果是字符串，尝试二次解析（LLM 可能返回了被包裹的 JSON 字符串）
+            if isinstance(result, str):
+                try:
+                    result = json.loads(result)
+                except (json.JSONDecodeError, TypeError):
+                    raise json.JSONDecodeError("解析结果为字符串而非对象/数组", json_str, 0)
+            return result
         except json.JSONDecodeError:
             prompt = get_auto_fix_json_prompt(json_str)
             res = await self.generate_text_async(prompt)
-            return await self.save_load_json_async(res)
+            return await self.save_load_json_async(res, _depth + 1)
 
     async def generate_smart_text_async(self, prompt: str) -> str:
         """

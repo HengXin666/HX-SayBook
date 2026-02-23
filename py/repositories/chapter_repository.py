@@ -148,6 +148,44 @@ class ChapterRepository:
         rows = self.db.execute(stmt).all()
         return [row.id for row in rows]
 
+    def get_ids_by_order_index_range(
+        self,
+        project_id: int,
+        start_order: int,
+        end_order: int,
+        has_content_only: bool = False,
+    ) -> list[int]:
+        """按 order_index 值范围获取章节 ID 列表（start_order/end_order 为章节号）"""
+        base = select(ChapterPO.id).where(
+            ChapterPO.project_id == project_id,
+            ChapterPO.order_index.isnot(None),
+            ChapterPO.order_index >= start_order,
+            ChapterPO.order_index <= end_order,
+        )
+        if has_content_only:
+            base = base.where(
+                and_(ChapterPO.text_content.isnot(None), ChapterPO.text_content != "")
+            )
+        stmt = base.order_by(ChapterPO.order_index.asc(), ChapterPO.id.asc())
+        rows = self.db.execute(stmt).all()
+        return [row.id for row in rows]
+
+    def get_order_index_range(
+        self, project_id: int
+    ) -> tuple[int | None, int | None]:
+        """获取项目下章节 order_index 的最小值和最大值"""
+        stmt = select(
+            func.min(ChapterPO.order_index),
+            func.max(ChapterPO.order_index),
+        ).where(
+            ChapterPO.project_id == project_id,
+            ChapterPO.order_index.isnot(None),
+        )
+        row = self.db.execute(stmt).one_or_none()
+        if row:
+            return row[0], row[1]
+        return None, None
+
     def create(self, chapter_data: ChapterPO) -> ChapterPO:
         """新建项目"""
         self.db.add(chapter_data)

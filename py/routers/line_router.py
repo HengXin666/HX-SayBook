@@ -84,6 +84,45 @@ def get_audio_file(path: str):
 from pydantic import BaseModel
 
 
+class ValidateAudioRequest(BaseModel):
+    """音频完整性校验请求"""
+    project_id: int
+    chapter_ids: List[int]
+
+
+@router.post("/validate-audio", response_model=Res)
+async def validate_chapters_audio(
+    req: ValidateAudioRequest,
+    line_service: LineService = Depends(get_line_service),
+    chapter_service: ChapterService = Depends(get_chapter_service),
+):
+    """
+    校验指定章节的音频完整性。
+    检查哪些章节有台词但缺少音频文件，帮助定位合并导出时音频/字幕对不上的问题。
+    """
+    if not req.chapter_ids:
+        return Res(data=None, code=400, message="请选择要校验的章节")
+
+    chapter_titles = {}
+    for cid in req.chapter_ids:
+        ch = chapter_service.get_chapter(cid)
+        if ch:
+            chapter_titles[cid] = ch.title
+
+    result = line_service.validate_chapters_audio(req.chapter_ids, chapter_titles)
+    if result["missing_audio"] > 0:
+        return Res(
+            data=result,
+            code=200,
+            message=f"发现 {result['chapters_with_missing']} 个章节存在音频缺失，共 {result['missing_audio']} 条台词缺少音频",
+        )
+    return Res(
+        data=result,
+        code=200,
+        message=f"全部 {result['total_lines']} 条台词音频完整，可以安全合并导出",
+    )
+
+
 class MergeExportRequest(BaseModel):
     """合并导出请求"""
 

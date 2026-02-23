@@ -78,12 +78,20 @@ export function useChapterLazyList({ projectId }: UseChapterLazyListOptions): Us
         setTotal(t);
 
         if (direction === 'append') {
-          updateChapters(prev => [...prev, ...items]);
+          updateChapters(prev => {
+            const existingIds = new Set(prev.map(c => c.id));
+            const newItems = items.filter(c => !existingIds.has(c.id));
+            return [...prev, ...newItems];
+          });
           setHasMore(offset + items.length < t);
         } else if (direction === 'prepend') {
           const listEl = listRef.current;
           const prevScrollHeight = listEl?.scrollHeight ?? 0;
-          updateChapters(prev => [...items, ...prev]);
+          updateChapters(prev => {
+            const existingIds = new Set(prev.map(c => c.id));
+            const newItems = items.filter(c => !existingIds.has(c.id));
+            return [...newItems, ...prev];
+          });
           updateOffsetStart(offset);
           setHasLess(offset > 0);
           // DOM 更新后补偿滚动位置

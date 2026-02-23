@@ -24,6 +24,12 @@ export const chapterApi = {
     api.get<unknown, Res<{ position: number; page: number }>>(`/chapters/project/${projectId}/position/${chapterId}`, { params: { page_size: pageSize } }),
   getIdsByRange: (projectId: number, params: { start: number; end: number; has_content_only?: boolean }) =>
     api.get<unknown, Res<number[]>>(`/chapters/project/${projectId}/ids-by-range`, { params }),
+  getIdsByOrderRange: (projectId: number, params: { start_order: number; end_order: number; has_content_only?: boolean }) =>
+    api.get<unknown, Res<number[]>>(`/chapters/project/${projectId}/ids-by-order-range`, { params }),
+  getOrderIndexRange: (projectId: number) =>
+    api.get<unknown, Res<{ min_order_index: number | null; max_order_index: number | null }>>(`/chapters/project/${projectId}/order-index-range`),
+  fixOrderIndex: (projectId: number) =>
+    api.post<unknown, Res<{ fixed_count: number }>>(`/chapters/project/${projectId}/fix-order-index`),
   get: (id: number) => api.get<unknown, Res<Chapter>>(`/chapters/${id}`),
   create: (data: Partial<Chapter>) => api.post<unknown, Res<Chapter>>('/chapters', data),
   update: (id: number, data: Partial<Chapter>) => api.put<unknown, Res<Chapter>>(`/chapters/${id}`, data),
@@ -54,6 +60,9 @@ export const lineApi = {
   updateAudioPath: (lineId: number, data: { chapter_id: number; audio_path: string }) => api.put<unknown, Res<boolean>>(`/lines/${lineId}/audio_path`, data),
   exportAudio: (chapterId: number, single?: boolean) => api.get<unknown, Res>(`/lines/export-audio/${chapterId}`, { params: { single } }),
   correctSubtitle: (chapterId: number) => api.post<unknown, Res>(`/lines/correct-subtitle/${chapterId}`),
+  /** 校验章节音频完整性 */
+  validateAudio: (data: { project_id: number; chapter_ids: number[] }) =>
+    api.post<unknown, Res<{ total_lines: number; total_audio: number; missing_audio: number; chapters_with_missing: number; chapters_detail: { chapter_id: number; title: string; total_lines: number; has_audio: number; missing_audio: number; missing_line_orders: number[] }[] }>>('/lines/validate-audio', data),
   mergeExport: (data: { project_id: number; chapter_ids: number[]; group_size: number; max_duration_minutes: number }) => api.post<unknown, Res>('/lines/merge-export', data),
   /** 一键打包下载合并结果为ZIP（支持可选包含字幕） */
   mergeExportZip: (data: { project_id: number; files: { url: string; name: string; subtitles?: Record<string, string> }[]; include_subtitles: boolean }) =>

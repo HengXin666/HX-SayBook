@@ -25,6 +25,7 @@ from py.repositories.project_repository import ProjectRepository
 from py.repositories.role_repository import RoleRepository
 from py.core.llm_engine import LLMEngine
 from py.repositories.voice_repository import VoiceRepository
+from py.services.project_service import ProjectService
 
 
 class ChapterService:
@@ -37,6 +38,7 @@ class ChapterService:
         """创建新章节
         - 检查同名章节是否存在
         - 如果存在，抛出异常或返回错误
+        - 如果没有指定 order_index，尝试从标题中自动提取
         - 调用 repository.create 插入数据库
         """
 
@@ -44,6 +46,9 @@ class ChapterService:
         if chapter:
             print("同名章节已存在")
             return None
+        # 自动提取 order_index（如果未指定）
+        if entity.order_index is None:
+            entity.order_index = ProjectService.extract_order_index(entity.title)
         # 手动将entity转化为po
         po = ChapterPO(**entity.__dict__)
         res = self.repository.create(po)
@@ -85,6 +90,37 @@ class ChapterService:
         return self.repository.get_ids_by_range(
             project_id, start, end, has_content_only
         )
+
+    def get_ids_by_order_index_range(
+        self,
+        project_id: int,
+        start_order: int,
+        end_order: int,
+        has_content_only: bool = False,
+    ) -> list[int]:
+        """按 order_index 值范围获取章节 ID 列表（章节号范围）"""
+        return self.repository.get_ids_by_order_index_range(
+            project_id, start_order, end_order, has_content_only
+        )
+
+    def get_order_index_range(self, project_id: int) -> tuple:
+        """获取项目下章节 order_index 的最小值和最大值"""
+        return self.repository.get_order_index_range(project_id)
+
+    def fix_order_index(self, project_id: int) -> int:
+        """修复项目下所有章节的 order_index：从标题中自动提取章节号
+        仅修复 order_index 为 NULL 的章节，返回修复的数量
+        """
+        chapters = self.repository.get_all(project_id)
+        fixed = 0
+        for ch in chapters:
+            if ch["order_index"] is not None:
+                continue
+            order_idx = ProjectService.extract_order_index(ch["title"])
+            if order_idx is not None:
+                self.repository.update(ch["id"], {"order_index": order_idx})
+                fixed += 1
+        return fixed
 
     def update_chapter(self, chapter_id: int, data: dict) -> bool:
         """更新章节
@@ -342,6 +378,18 @@ class ChapterService:
                         "success": False,
                         "message": "JSON 解析失败或返回空对象",
                     }
+                # 校验返回类型：必须是列表
+                if not isinstance(parsed_data, list):
+                    return {
+                        "success": False,
+                        "message": f"LLM 返回格式异常，期望数组但得到 {type(parsed_data).__name__}",
+                    }
+                # 校验列表元素类型：必须是字典
+                if parsed_data and not isinstance(parsed_data[0], dict):
+                    return {
+                        "success": False,
+                        "message": f"LLM 返回数组元素格式异常，期望对象但得到 {type(parsed_data[0]).__name__}",
+                    }
                 # 这里进行自动填充
 
                 if is_precise_fill == 1:
@@ -535,6 +583,18 @@ class ChapterService:
                     return {
                         "success": False,
                         "message": "JSON 解析失败或返回空对象",
+                    }
+                # 校验返回类型：必须是列表
+                if not isinstance(parsed_data, list):
+                    return {
+                        "success": False,
+                        "message": f"LLM 返回格式异常，期望数组但得到 {type(parsed_data).__name__}",
+                    }
+                # 校验列表元素类型：必须是字典
+                if parsed_data and not isinstance(parsed_data[0], dict):
+                    return {
+                        "success": False,
+                        "message": f"LLM 返回数组元素格式异常，期望对象但得到 {type(parsed_data[0]).__name__}",
                     }
 
                 if is_precise_fill == 1:

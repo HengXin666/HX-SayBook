@@ -148,6 +148,9 @@ export default function ProjectDetail() {
   const [batchLLMModalOpen, setBatchLLMModalOpen] = useState(false);
   const [batchTTSModalOpen, setBatchTTSModalOpen] = useState(false);
   const [autoPilotModalOpen, setAutoPilotModalOpen] = useState(false);
+  // 从校验结果跳转到批量配音时传递的初始参数
+  const [ttsInitialSelectedIds, setTtsInitialSelectedIds] = useState<number[]>([]);
+  const [ttsInitialOnlyMissing, setTtsInitialOnlyMissing] = useState(false);
   // 批量LLM后台运行状态（弹窗关闭时也能显示进度）
   const [batchLLMRunning, setBatchLLMRunning] = useState(false);
   const [batchLLMProgress, setBatchLLMProgress] = useState(0);
@@ -156,6 +159,9 @@ export default function ProjectDetail() {
   // 一键挂机后台运行状态
   const [autoPilotRunning, setAutoPilotRunning] = useState(false);
   const [autoPilotProgress, setAutoPilotProgress] = useState(0);
+  // LLM 拆分失败状态（用于展示重试按钮）
+  const [llmSplitFailed, setLlmSplitFailed] = useState(false);
+  const [llmSplitErrorMsg, setLlmSplitErrorMsg] = useState('');
 
   // ==================== 合并导出弹窗 ====================
   const [mergeModalOpen, setMergeModalOpen] = useState(false);
@@ -174,12 +180,22 @@ export default function ProjectDetail() {
   const setMergeRangeStart = (v: number) => updateMergeRange('rangeStart', v);
   const setMergeRangeEnd = (v: number) => updateMergeRange('rangeEnd', v);
   const [mergeRangeLoading, setMergeRangeLoading] = useState(false);
+  // 合并导出章节号范围（使用 order_index）
+  const [mergeOrderMin, setMergeOrderMin] = useState<number>(1);
+  const [mergeOrderMax, setMergeOrderMax] = useState<number>(1);
   const [mergeZipLoading, setMergeZipLoading] = useState(false);
   const [mergeZipIncludeSubtitles, setMergeZipIncludeSubtitles] = useState(true);
   // 合并历史
   const [mergeHistoryModalOpen, setMergeHistoryModalOpen] = useState(false);
   const [mergeHistoryFiles, setMergeHistoryFiles] = useState<{ name: string; url: string; size_mb: number; modified_time: string; subtitles?: Record<string, string> }[]>([]);
   const [mergeHistoryLoading, setMergeHistoryLoading] = useState(false);
+  // 音频完整性校验
+  const [mergeValidateLoading, setMergeValidateLoading] = useState(false);
+  const [mergeValidateResult, setMergeValidateResult] = useState<{
+    total_lines: number; total_audio: number; missing_audio: number;
+    chapters_with_missing: number;
+    chapters_detail: { chapter_id: number; title: string; total_lines: number; has_audio: number; missing_audio: number; missing_line_orders: number[] }[];
+  } | null>(null);
 
 
   // ==================== 播放状态 ====================
@@ -251,14 +267,22 @@ export default function ProjectDetail() {
         setChapterTotal(total);
 
         if (direction === 'append') {
-          // 向下追加
-          setChapters(prev => [...prev, ...items]);
+          // 向下追加（去重）
+          setChapters(prev => {
+            const existingIds = new Set(prev.map(c => c.id));
+            const newItems = items.filter(c => !existingIds.has(c.id));
+            return [...prev, ...newItems];
+          });
           setChapterHasMore(offset + items.length < total);
         } else if (direction === 'prepend') {
           // 向上插入：先记录旧高度，等 DOM 更新后补偿滚动位置
           const listEl = chapterListRef.current;
           const prevScrollHeight = listEl?.scrollHeight ?? 0;
-          setChapters(prev => [...items, ...prev]);
+          setChapters(prev => {
+            const existingIds = new Set(prev.map(c => c.id));
+            const newItems = items.filter(c => !existingIds.has(c.id));
+            return [...newItems, ...prev];
+          });
           setChapterOffsetStart(offset);
           setChapterHasLess(offset > 0);
           // DOM 更新后补偿滚动位置，避免跳变
@@ -312,7 +336,7 @@ export default function ProjectDetail() {
   // 合并导出弹窗的懒加载章节列表
   const mergeLazyList = useChapterLazyList({ projectId });
   // mergeRangeEnd 需要在 mergeLazyList 声明之后计算
-  const mergeRangeEnd = mergeRangeConfig.rangeEnd || mergeLazyList.total || 1;
+  const mergeRangeEnd = mergeRangeConfig.rangeEnd || mergeOrderMax || 1;
 
   // 加载选中章节的完整数据（含 text_content）
   const loadChapterDetail = useCallback(async (chapterId: number) => {
@@ -581,31 +605,48 @@ export default function ProjectDetail() {
   };
 
   // ==================== LLM 拆分 ====================
+  /** 执行 LLM 拆分（内部逻辑，不含确认弹窗） */
+  const doLLMSplit = async () => {
+    if (!activeChapterId) return;
+    // 先删除原有台词
+    await lineApi.deleteAll(activeChapterId);
+    const hide = message.loading('正在调用 LLM 拆分台词...', 0);
+    try {
+      setLlmSplitFailed(false);
+      setLlmSplitErrorMsg('');
+      const res = await chapterApi.getLines(projectId, activeChapterId);
+      if (res.code === 200) {
+        message.success('LLM 拆分完成');
+        setLlmSplitFailed(false);
+        loadLines();
+        loadRoles();
+      } else {
+        setLlmSplitFailed(true);
+        setLlmSplitErrorMsg(res.message || '拆分失败');
+        message.error(res.message || '拆分失败');
+      }
+    } catch {
+      setLlmSplitFailed(true);
+      setLlmSplitErrorMsg('LLM 拆分失败');
+      message.error('LLM 拆分失败');
+    } finally {
+      hide();
+    }
+  };
+
   const handleLLMSplit = async () => {
     if (!activeChapterId) return;
     Modal.confirm({
       title: '确认操作',
       content: '确定要调用 LLM 对该章节进行台词拆分吗？此操作可能覆盖原有台词。',
-      onOk: async () => {
-        // 先删除原有台词
-        await lineApi.deleteAll(activeChapterId);
-        const hide = message.loading('正在调用 LLM 拆分台词...', 0);
-        try {
-          const res = await chapterApi.getLines(projectId, activeChapterId);
-          if (res.code === 200) {
-            message.success('LLM 拆分完成');
-            loadLines();
-            loadRoles();
-          } else {
-            message.error(res.message || '拆分失败');
-          }
-        } catch {
-          message.error('LLM 拆分失败');
-        } finally {
-          hide();
-        }
-      },
+      onOk: doLLMSplit,
     });
+  };
+
+  /** 重试 LLM 拆分（不需要确认弹窗，直接重新执行） */
+  const handleLLMSplitRetry = async () => {
+    if (!activeChapterId) return;
+    await doLLMSplit();
   };
 
   // ==================== 导入第三方 JSON ====================
@@ -963,6 +1004,7 @@ export default function ProjectDetail() {
     setMergeGroupSize(1);
     setMergeDurationMinutes(30);
     setMergeResults(null);
+    setMergeValidateResult(null);
     setMergeModalOpen(true);
     mergeLazyList.init(); // 懒加载章节列表
   };
@@ -1081,6 +1123,36 @@ export default function ProjectDetail() {
     });
   };
 
+  // 校验音频完整性
+  const handleValidateAudio = async () => {
+    if (mergeSelectedChapters.length === 0) {
+      message.warning('请先选择要校验的章节');
+      return;
+    }
+    setMergeValidateLoading(true);
+    setMergeValidateResult(null);
+    try {
+      const res = await lineApi.validateAudio({
+        project_id: projectId,
+        chapter_ids: mergeSelectedChapters,
+      });
+      if (res.code === 200 && res.data) {
+        setMergeValidateResult(res.data);
+        if (res.data.missing_audio > 0) {
+          message.warning(res.message);
+        } else {
+          message.success(res.message);
+        }
+      } else {
+        message.error(res.message || '校验失败');
+      }
+    } catch {
+      message.error('校验请求失败');
+    } finally {
+      setMergeValidateLoading(false);
+    }
+  };
+
   const handleMergeExport = async () => {
     if (mergeSelectedChapters.length === 0) {
       message.warning('请选择要合并的章节');
@@ -1131,17 +1203,17 @@ export default function ProjectDetail() {
     }
   };
 
-  // 合并导出：按范围选择
+  // 合并导出：按章节号范围选择
   const handleMergeSelectRange = useCallback(async () => {
-    const start = Math.max(1, mergeRangeStart);
-    const end = Math.min(mergeLazyList.total, mergeRangeEnd);
+    const start = Math.max(mergeOrderMin, mergeRangeStart);
+    const end = Math.min(mergeOrderMax, mergeRangeEnd);
     if (start > end) {
-      message.warning('起始章节不能大于结束章节');
+      message.warning('起始章节号不能大于结束章节号');
       return;
     }
     setMergeRangeLoading(true);
     try {
-      const res = await chapterApi.getIdsByRange(projectId, { start, end });
+      const res = await chapterApi.getIdsByOrderRange(projectId, { start_order: start, end_order: end });
       if (res.data && res.data.length > 0) {
         setMergeSelectedChapters(res.data);
         message.success(`已选中第 ${start} ~ ${end} 章，共 ${res.data.length} 个章节`);
@@ -1149,22 +1221,37 @@ export default function ProjectDetail() {
         setMergeSelectedChapters([]);
         message.warning(`第 ${start} ~ ${end} 章中没有章节`);
       }
-      // 清空列表并跳转到 L 位置
+      // 清空列表并跳转到对应位置
       mergeLazyList.reset();
-      await mergeLazyList.jumpToIndex(start);
+      const posRes = await chapterApi.getIdsByOrderRange(projectId, { start_order: mergeOrderMin, end_order: start });
+      const position = posRes.data ? posRes.data.length : 1;
+      await mergeLazyList.jumpToIndex(position);
     } catch {
       message.error('获取范围章节失败');
     } finally {
       setMergeRangeLoading(false);
     }
-  }, [mergeRangeStart, mergeRangeEnd, mergeLazyList, projectId]);
+  }, [mergeRangeStart, mergeRangeEnd, mergeOrderMin, mergeOrderMax, mergeLazyList, projectId]);
 
   // 仅当持久化中没有保存过范围（rangeEnd 为 0）时，设置默认值
   useEffect(() => {
-    if (mergeModalOpen && mergeLazyList.total > 0 && mergeRangeConfig.rangeEnd === 0) {
-      updateMergeRange('rangeEnd', mergeLazyList.total);
+    if (mergeModalOpen && projectId) {
+      chapterApi.getOrderIndexRange(projectId).then((res) => {
+        if (res.data) {
+          const minVal = res.data.min_order_index ?? 1;
+          const maxVal = res.data.max_order_index ?? 1;
+          setMergeOrderMin(minVal);
+          setMergeOrderMax(maxVal);
+          if (mergeRangeConfig.rangeEnd === 0) {
+            updateMergeRange('rangeEnd', maxVal);
+          }
+          if (mergeRangeConfig.rangeStart < minVal) {
+            updateMergeRange('rangeStart', minVal);
+          }
+        }
+      });
     }
-  }, [mergeModalOpen, mergeLazyList.total]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [mergeModalOpen, projectId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ==================== 台词表格列 ====================
   const statusType = (s: string) => {
@@ -1657,6 +1744,19 @@ export default function ProjectDetail() {
                   >
                     LLM 拆分
                   </Button>
+                  {llmSplitFailed && (
+                    <Tooltip title={llmSplitErrorMsg || 'LLM 拆分失败，点击重试'}>
+                      <Button
+                        size="small"
+                        danger
+                        icon={<ReloadOutlined />}
+                        disabled={!currentChapterContent}
+                        onClick={handleLLMSplitRetry}
+                      >
+                        重试拆分
+                      </Button>
+                    </Tooltip>
+                  )}
                   <Button
                     size="small"
                     icon={<RobotOutlined />}
@@ -2078,11 +2178,13 @@ export default function ProjectDetail() {
       {/* 批量 TTS 配音弹窗 */}
       <BatchTTSModal
         open={batchTTSModalOpen}
-        onClose={() => setBatchTTSModalOpen(false)}
+        onClose={() => { setBatchTTSModalOpen(false); setTtsInitialSelectedIds([]); setTtsInitialOnlyMissing(false); }}
         projectId={projectId}
         onComplete={() => {
           loadLines();
         }}
+        initialSelectedIds={ttsInitialSelectedIds}
+        initialOnlyMissing={ttsInitialOnlyMissing}
       />
 
       {/* 一键挂机弹窗 */}
@@ -2113,6 +2215,9 @@ export default function ProjectDetail() {
             <Button key="close" onClick={() => setMergeModalOpen(false)}>关闭</Button>,
           ] : [
             <Button key="history" icon={<HistoryOutlined />} onClick={openMergeHistory}>历史记录</Button>,
+            <Button key="validate" loading={mergeValidateLoading} onClick={handleValidateAudio} disabled={mergeSelectedChapters.length === 0}>
+              🔍 校验音频
+            </Button>,
             <Button key="cancel" onClick={() => setMergeModalOpen(false)}>取消</Button>,
             <Button key="ok" type="primary" loading={mergeLoading} onClick={handleMergeExport}>
               开始合并
@@ -2209,19 +2314,19 @@ export default function ProjectDetail() {
                 <Typography.Text style={{ fontSize: 12, whiteSpace: 'nowrap' }}>从第</Typography.Text>
                 <InputNumber
                   size="small"
-                  min={1}
-                  max={mergeLazyList.total || 1}
+                  min={mergeOrderMin}
+                  max={mergeOrderMax}
                   value={mergeRangeStart}
-                  onChange={(v) => setMergeRangeStart(v ?? 1)}
+                  onChange={(v) => setMergeRangeStart(v ?? mergeOrderMin)}
                   style={{ width: 70 }}
                 />
                 <Typography.Text style={{ fontSize: 12, whiteSpace: 'nowrap' }}>章 到 第</Typography.Text>
                 <InputNumber
                   size="small"
-                  min={1}
-                  max={mergeLazyList.total || 1}
+                  min={mergeOrderMin}
+                  max={mergeOrderMax}
                   value={mergeRangeEnd}
-                  onChange={(v) => setMergeRangeEnd(v ?? mergeLazyList.total)}
+                  onChange={(v) => setMergeRangeEnd(v ?? mergeOrderMax)}
                   style={{ width: 70 }}
                 />
                 <Typography.Text style={{ fontSize: 12, whiteSpace: 'nowrap' }}>章</Typography.Text>
@@ -2243,14 +2348,14 @@ export default function ProjectDetail() {
                   <div style={{ textAlign: 'center', padding: 4, color: '#585b70', fontSize: 11 }}>↑ 向上滚动加载更多</div>
                 )}
                 {mergeLazyList.chapters.map((ch, idx) => {
-                  const globalIndex = mergeLazyList.offsetStart + idx + 1;
+                  const chapterNum = ch.order_index ?? '?';
                   return (
                     <div key={ch.id} data-chapter-item style={{ padding: '4px 0' }}>
                       <Checkbox
                         checked={mergeSelectedChapters.includes(ch.id)}
                         onChange={(e) => handleMergeChapterToggle(ch.id, e.target.checked)}
                       >
-                        <span style={{ color: '#585b70', fontSize: 11, marginRight: 4 }}>#{globalIndex}</span>
+                        <span style={{ color: '#585b70', fontSize: 11, marginRight: 4 }}>第{chapterNum}章</span>
                         {ch.title}
                       </Checkbox>
                     </div>
@@ -2319,6 +2424,59 @@ export default function ProjectDetail() {
                     : `将按 ${mergeDurationMinutes} 分钟为一段自动分割（章节不截断，允许略超时长）`
                   }
                 </Typography.Text>
+              </div>
+            )}
+
+            {/* 音频校验结果 */}
+            {mergeValidateResult && (
+              <div style={{ marginTop: 12, padding: 12, borderRadius: 6, background: mergeValidateResult.missing_audio > 0 ? '#fff7e6' : '#f6ffed', border: `1px solid ${mergeValidateResult.missing_audio > 0 ? '#ffd591' : '#b7eb8f'}` }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Typography.Text strong style={{ color: mergeValidateResult.missing_audio > 0 ? '#fa8c16' : '#52c41a' }}>
+                    {mergeValidateResult.missing_audio > 0
+                      ? `⚠️ 发现 ${mergeValidateResult.chapters_with_missing} 个章节存在音频缺失`
+                      : `✅ 全部 ${mergeValidateResult.total_lines} 条台词音频完整`}
+                  </Typography.Text>
+                  {mergeValidateResult.missing_audio > 0 && (
+                    <Button
+                      type="primary"
+                      size="small"
+                      danger
+                      icon={<SoundOutlined />}
+                      onClick={() => {
+                        // 收集缺失音频的章节 IDs
+                        const missingChapterIds = mergeValidateResult.chapters_detail.map(ch => ch.chapter_id);
+                        // 关闭合并导出弹窗
+                        setMergeModalOpen(false);
+                        // 设置初始参数并打开批量配音弹窗
+                        setTtsInitialSelectedIds(missingChapterIds);
+                        setTtsInitialOnlyMissing(true);
+                        setBatchTTSModalOpen(true);
+                      }}
+                    >
+                      🔧 跳转补配缺失音频
+                    </Button>
+                  )}
+                </div>
+                <div style={{ marginTop: 4, fontSize: 12, color: '#666' }}>
+                  总台词: {mergeValidateResult.total_lines} | 有音频: {mergeValidateResult.total_audio} | 缺失: {mergeValidateResult.missing_audio}
+                </div>
+                {mergeValidateResult.chapters_detail.length > 0 && (
+                  <div style={{ marginTop: 8, maxHeight: 150, overflowY: 'auto' }}>
+                    {mergeValidateResult.chapters_detail.map((ch) => (
+                      <div key={ch.chapter_id} style={{ padding: '4px 0', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}>
+                        <Typography.Text strong>{ch.title}</Typography.Text>
+                        <span style={{ marginLeft: 8, color: '#fa8c16' }}>
+                          缺失 {ch.missing_audio}/{ch.total_lines} 条音频
+                        </span>
+                        {ch.missing_line_orders.length > 0 && (
+                          <span style={{ marginLeft: 4, color: '#999' }}>
+                            (台词序号: {ch.missing_line_orders.join(', ')}{ch.missing_line_orders.length >= 10 ? '...' : ''})
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>

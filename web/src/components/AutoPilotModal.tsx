@@ -117,16 +117,7 @@ export default function AutoPilotModal({ open, onClose, projectId, onComplete, o
     setUnboundChapterId(null);
   };
 
-  // 加载章节后自动选中
-  useEffect(() => {
-    if (open && lazyList.chapters.length > 0 && hasInitRef.current && selectedIds.length === 0 && !running) {
-      const validIds = lazyList.chapters.filter((c) => c.has_content).map((c) => c.id);
-      setSelectedIds(prev => {
-        const combined = new Set([...prev, ...validIds]);
-        return Array.from(combined);
-      });
-    }
-  }, [lazyList.chapters]); // eslint-disable-line react-hooks/exhaustive-deps
+  // （不再自动选中加载的章节，用户需要通过"应用范围"或"选中可见的"按钮主动选择）
 
   // 加载角色列表（用于音色分配界面）
   const loadRoles = useCallback(async () => {
@@ -354,30 +345,45 @@ export default function AutoPilotModal({ open, onClose, projectId, onComplete, o
     }
   }, [projectId]);
 
-  // 范围选择（从持久化配置中读取）
+  // 章节号范围（使用 order_index）
+  const [orderMin, setOrderMin] = useState<number>(1);
+  const [orderMax, setOrderMax] = useState<number>(1);
   const rangeStart = persistedConfig.rangeStart;
-  const rangeEnd = persistedConfig.rangeEnd || lazyList.total || 1;
+  const rangeEnd = persistedConfig.rangeEnd || orderMax || 1;
   const setRangeStart = (v: number) => updateConfig('rangeStart', v);
   const setRangeEnd = (v: number) => updateConfig('rangeEnd', v);
   const [rangeLoading, setRangeLoading] = useState(false);
 
-  // 仅当持久化中没有保存过范围（rangeEnd 为 0）时，设置默认值
+  // 获取章节号范围
   useEffect(() => {
-    if (open && lazyList.total > 0 && persistedConfig.rangeEnd === 0) {
-      updateConfig('rangeEnd', lazyList.total);
+    if (open && projectId) {
+      chapterApi.getOrderIndexRange(projectId).then((res) => {
+        if (res.data) {
+          const minVal = res.data.min_order_index ?? 1;
+          const maxVal = res.data.max_order_index ?? 1;
+          setOrderMin(minVal);
+          setOrderMax(maxVal);
+          if (persistedConfig.rangeEnd === 0) {
+            updateConfig('rangeEnd', maxVal);
+          }
+          if (persistedConfig.rangeStart < minVal) {
+            updateConfig('rangeStart', minVal);
+          }
+        }
+      });
     }
-  }, [open, lazyList.total]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, projectId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSelectRange = useCallback(async () => {
-    const start = Math.max(1, rangeStart);
-    const end = Math.min(lazyList.total, rangeEnd);
+    const start = Math.max(orderMin, rangeStart);
+    const end = Math.min(orderMax, rangeEnd);
     if (start > end) {
-      message.warning('起始章节不能大于结束章节');
+      message.warning('起始章节号不能大于结束章节号');
       return;
     }
     setRangeLoading(true);
     try {
-      const res = await chapterApi.getIdsByRange(projectId, { start, end, has_content_only: true });
+      const res = await chapterApi.getIdsByOrderRange(projectId, { start_order: start, end_order: end, has_content_only: true });
       if (res.data && res.data.length > 0) {
         setSelectedIds(res.data);
         message.success(`已选中第 ${start} ~ ${end} 章中 ${res.data.length} 个有内容的章节`);
@@ -386,13 +392,15 @@ export default function AutoPilotModal({ open, onClose, projectId, onComplete, o
         message.warning(`第 ${start} ~ ${end} 章中没有有内容的章节`);
       }
       lazyList.reset();
-      await lazyList.jumpToIndex(start);
+      const posRes = await chapterApi.getIdsByOrderRange(projectId, { start_order: orderMin, end_order: start });
+      const position = posRes.data ? posRes.data.length : 1;
+      await lazyList.jumpToIndex(position);
     } catch {
       message.error('获取范围章节失败');
     } finally {
       setRangeLoading(false);
     }
-  }, [rangeStart, rangeEnd, lazyList, projectId]);
+  }, [rangeStart, rangeEnd, orderMin, orderMax, lazyList, projectId]);
 
   // 阶段颜色与标签
   const phaseConfig: Record<string, { color: string; label: string }> = {
@@ -699,20 +707,20 @@ export default function AutoPilotModal({ open, onClose, projectId, onComplete, o
           <Text style={{ color: '#a6adc8', fontSize: 12, whiteSpace: 'nowrap' }}>从第</Text>
           <InputNumber
             size="small"
-            min={1}
-            max={lazyList.total || 1}
+            min={orderMin}
+            max={orderMax}
             value={rangeStart}
-            onChange={v => setRangeStart(v ?? 1)}
+            onChange={v => setRangeStart(v ?? orderMin)}
             style={{ width: 80 }}
             disabled={running}
           />
           <Text style={{ color: '#a6adc8', fontSize: 12, whiteSpace: 'nowrap' }}>章 到 第</Text>
           <InputNumber
             size="small"
-            min={1}
-            max={lazyList.total || 1}
+            min={orderMin}
+            max={orderMax}
             value={rangeEnd}
-            onChange={v => setRangeEnd(v ?? lazyList.total)}
+            onChange={v => setRangeEnd(v ?? orderMax)}
             style={{ width: 80 }}
             disabled={running}
           />
@@ -745,7 +753,7 @@ export default function AutoPilotModal({ open, onClose, projectId, onComplete, o
           )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {lazyList.chapters.map((ch) => {
-              const globalIndex = lazyList.offsetStart + lazyList.chapters.indexOf(ch) + 1;
+              const chapterNum = ch.order_index ?? '?';
               const cs = chapterStatuses.get(ch.id);
               return (
                 <div key={ch.id} data-chapter-item style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -760,7 +768,7 @@ export default function AutoPilotModal({ open, onClose, projectId, onComplete, o
                     }}
                     disabled={running}
                   >
-                    <span style={{ color: '#585b70', fontSize: 11, marginRight: 4 }}>#{globalIndex}</span>
+                    <span style={{ color: '#585b70', fontSize: 11, marginRight: 4 }}>第{chapterNum}章</span>
                     <span style={{ color: '#cdd6f4' }}>{ch.title}</span>
                     {!ch.has_content && (
                       <Tag color="warning" style={{ marginLeft: 8, fontSize: 10 }}>无内容</Tag>

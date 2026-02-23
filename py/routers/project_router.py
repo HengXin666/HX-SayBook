@@ -192,8 +192,14 @@ def import_project(
     for chapter_content in chapter_contents:
         name = chapter_content["chapter_name"]
         content = chapter_content["content"]
-        print("批量创建章节", name)
+        order_idx = chapter_content.get("order_index")
+        print("批量创建章节", name, f"(第{order_idx}章)" if order_idx else "")
         chapter_service.create_chapter(
-            ChapterEntity(project_id=project_id, title=name, text_content=content)
+            ChapterEntity(
+                project_id=project_id,
+                title=name,
+                text_content=content,
+                order_index=order_idx,
+            )
         )
     return Res(code=200, message="导入成功")

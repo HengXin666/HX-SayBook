@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # ============================================================
-# Index-TTS 一键安装脚本
+# Index-TTS 2.5 一键安装脚本
 # 支持 Windows (Git Bash/WSL) 和 Arch Linux
+# 2.5 改进: Zipformer S2M / 25Hz 语义编码 / GRPO / 语速控制
 # ============================================================
 set -e
 
 echo "========================================"
-echo "  Index-TTS 安装向导"
+echo "  Index-TTS 2.5 安装向导"
+echo "  (Zipformer S2M, RTF 0.119)"
 echo "========================================"
 
 INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)/index-tts"

@@ -924,18 +924,30 @@ class LineService:
         merge_dir = os.path.join(project_root_path, str(project_id), "merged_audio")
         os.makedirs(merge_dir, exist_ok=True)
 
-        # 收集每个章节的音频路径列表及时长
+        # 收集每个章节的音频路径列表、台词信息及时长
         chapter_audio_map = {}  # {chapter_id: [audio_path, ...]}
+        chapter_lines_map = {}  # {chapter_id: [{text, audio_path, role_name}, ...]}
         chapter_duration_map = {}  # {chapter_id: duration_seconds}
         for cid in chapter_ids:
             lines = self.repository.get_all(cid)
-            paths = [
-                line.audio_path
-                for line in lines
-                if line.audio_path and os.path.exists(line.audio_path)
-            ]
+            paths = []
+            lines_info = []
+            for line in lines:
+                if line.audio_path and os.path.exists(line.audio_path):
+                    paths.append(line.audio_path)
+                    role = (
+                        self.role_repository.get_by_id(line.role_id)
+                        if line.role_id
+                        else None
+                    )
+                    lines_info.append({
+                        "text": line.text_content or "",
+                        "audio_path": line.audio_path,
+                        "role_name": role.name if role else "",
+                    })
             if paths:
                 chapter_audio_map[cid] = paths
+                chapter_lines_map[cid] = lines_info
                 chapter_duration_map[cid] = self._get_chapter_duration(paths)
 
         if not chapter_audio_map:
@@ -1058,25 +1070,11 @@ class LineService:
             duration_sec = int(group_duration % 60)
 
             # ------ 为合并的 MP3 生成对应字幕文件 ------
+            # 使用与音频拼接完全相同的数据源，确保字幕与音频一一对应
             group_lines_info = []
             for cid in group:
-                if cid not in chapter_audio_map:
-                    continue
-                lines = self.repository.get_all(cid)
-                for line in lines:
-                    if line.audio_path and os.path.exists(line.audio_path):
-                        role = (
-                            self.role_repository.get_by_id(line.role_id)
-                            if line.role_id
-                            else None
-                        )
-                        group_lines_info.append(
-                            {
-                                "text": line.text_content or "",
-                                "audio_path": line.audio_path,
-                                "role_name": role.name if role else "",
-                            }
-                        )
+                if cid in chapter_lines_map:
+                    group_lines_info.extend(chapter_lines_map[cid])
 
             subtitle_base = os.path.splitext(safe_name)[0]
             subtitle_files = generate_subtitle_files(
@@ -1109,6 +1107,57 @@ class LineService:
             "files": result_files,
             "output_dir": merge_dir,
             "total_chapters": len(chapter_audio_map),
+        }
+
+    def validate_chapters_audio(self, chapter_ids: list, chapter_titles: dict) -> dict:
+        """
+        校验指定章节的音频完整性。
+        返回：
+        - total_lines: 总台词数
+        - total_audio: 有音频的台词数
+        - missing_audio: 缺失音频的台词数
+        - chapters_detail: 每个章节的详细信息
+        """
+        chapters_detail = []
+        total_lines = 0
+        total_audio = 0
+        missing_audio = 0
+
+        for cid in chapter_ids:
+            lines = self.repository.get_all(cid)
+            ch_total = len(lines)
+            ch_has_audio = 0
+            ch_missing = 0
+            missing_line_orders = []
+
+            for idx, line in enumerate(lines):
+                if line.audio_path and os.path.exists(line.audio_path):
+                    ch_has_audio += 1
+                else:
+                    ch_missing += 1
+                    missing_line_orders.append(idx + 1)
+
+            total_lines += ch_total
+            total_audio += ch_has_audio
+            missing_audio += ch_missing
+
+            title = chapter_titles.get(cid, f"章节{cid}")
+            if ch_missing > 0:
+                chapters_detail.append({
+                    "chapter_id": cid,
+                    "title": title,
+                    "total_lines": ch_total,
+                    "has_audio": ch_has_audio,
+                    "missing_audio": ch_missing,
+                    "missing_line_orders": missing_line_orders[:10],  # 最多显示前10个
+                })
+
+        return {
+            "total_lines": total_lines,
+            "total_audio": total_audio,
+            "missing_audio": missing_audio,
+            "chapters_with_missing": len(chapters_detail),
+            "chapters_detail": chapters_detail,
         }
 
     def generate_subtitle(self, line_id, dto):
