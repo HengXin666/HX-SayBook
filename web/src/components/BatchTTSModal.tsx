@@ -1,6 +1,6 @@
 import { SoundOutlined } from '@ant-design/icons';
 import { Checkbox, InputNumber, Modal, Progress, Slider, Space, Tag, Typography, message } from 'antd';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { batchApi, chapterApi } from '../api';
 import { useChapterLazyList } from '../hooks/useChapterLazyList';
 import { usePersistedConfig } from '../hooks/usePersistedState';
@@ -15,6 +15,10 @@ interface BatchTTSModalProps {
   onClose: () => void;
   projectId: number;
   onComplete?: () => void;
+  /** 外部预设的选中章节 IDs（如从校验结果跳转过来） */
+  initialSelectedIds?: number[];
+  /** 外部预设的"仅补配缺失"模式 */
+  initialOnlyMissing?: boolean;
 }
 
 interface ChapterStatus {
@@ -25,7 +29,7 @@ interface ChapterStatus {
   doneCount?: number;
 }
 
-export default function BatchTTSModal({ open, onClose, projectId, onComplete }: BatchTTSModalProps) {
+export default function BatchTTSModal({ open, onClose, projectId, onComplete, initialSelectedIds, initialOnlyMissing }: BatchTTSModalProps) {
   const { subscribe } = useWebSocket();
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [running, setRunning] = useState(false);
@@ -47,6 +51,7 @@ export default function BatchTTSModal({ open, onClose, projectId, onComplete }: 
   const setSpeed = (v: number) => updateConfig('speed', v);
   const skipDone = persistedConfig.skipDone ?? true;
   const setSkipDone = (v: boolean) => updateConfig('skipDone', v);
+  const [onlyMissing, setOnlyMissing] = useState(false);
 
   // 使用懒加载 Hook
   const lazyList = useChapterLazyList({ projectId });
@@ -55,7 +60,9 @@ export default function BatchTTSModal({ open, onClose, projectId, onComplete }: 
   useEffect(() => {
     if (open) {
       lazyList.init();
-      setSelectedIds([]);
+      // 如果有外部预设的选中章节（从校验结果跳转过来），使用外部值
+      setSelectedIds(initialSelectedIds && initialSelectedIds.length > 0 ? initialSelectedIds : []);
+      setOnlyMissing(initialOnlyMissing ?? false);
       setLogs([]);
       setOverallProgress(0);
       setOverallDone(0);
@@ -67,27 +74,7 @@ export default function BatchTTSModal({ open, onClose, projectId, onComplete }: 
     }
   }, [open, projectId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 懒加载列表加载后，自动选中新加载的章节（首次时全选）
-  const firstLoadRef = useRef(true);
-  useEffect(() => {
-    if (open && lazyList.chapters.length > 0 && !running) {
-      const newIds = lazyList.chapters.map((c) => c.id);
-      setSelectedIds(prev => {
-        const combined = new Set([...prev, ...newIds]);
-        return Array.from(combined);
-      });
-      if (firstLoadRef.current) {
-        firstLoadRef.current = false;
-      }
-    }
-  }, [lazyList.chapters]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // 重置 firstLoadRef
-  useEffect(() => {
-    if (open) {
-      firstLoadRef.current = true;
-    }
-  }, [open]);
+  // （不再自动选中加载的章节，用户需要通过"应用范围"或"选中可见的"按钮主动选择）
 
   // 监听 WebSocket 事件
   useEffect(() => {
@@ -181,7 +168,8 @@ export default function BatchTTSModal({ open, onClose, projectId, onComplete }: 
     }
     setRunning(true);
     setCancelling(false);
-    setLogs([`🚀 开始批量TTS配音，共 ${selectedIds.length} 个章节，语速 ${speed}x` + (skipDone ? '（跳过已配音）' : '')]);
+    const modeHint = onlyMissing ? '（仅补配缺失音频）' : skipDone ? '（跳过已配音）' : '';
+    setLogs([`🚀 开始批量TTS配音，共 ${selectedIds.length} 个章节，语速 ${speed}x` + modeHint]);
     setOverallProgress(0);
     setOverallDone(0);
     setOverallTotal(0);
@@ -199,7 +187,7 @@ export default function BatchTTSModal({ open, onClose, projectId, onComplete }: 
     });
 
     try {
-      const res = await batchApi.ttsGenerate({ project_id: projectId, chapter_ids: selectedIds, speed, skip_done: skipDone });
+      const res = await batchApi.ttsGenerate({ project_id: projectId, chapter_ids: selectedIds, speed, skip_done: skipDone, only_missing: onlyMissing });
       if (res.code !== 200) {
         message.error(res.message || '启动失败');
         setRunning(false);
@@ -208,7 +196,7 @@ export default function BatchTTSModal({ open, onClose, projectId, onComplete }: 
       message.error('请求失败');
       setRunning(false);
     }
-  }, [selectedIds, projectId, speed, skipDone]);
+  }, [selectedIds, projectId, speed, skipDone, onlyMissing]);
 
   // 取消任务
   const handleCancel = useCallback(async () => {
@@ -227,18 +215,34 @@ export default function BatchTTSModal({ open, onClose, projectId, onComplete }: 
     }
   }, [projectId]);
 
-  // 范围选择（从持久化配置中读取）
+  // 章节号范围（使用 order_index）
+  const [orderMin, setOrderMin] = useState<number>(1);
+  const [orderMax, setOrderMax] = useState<number>(1);
   const rangeStart = persistedConfig.rangeStart;
-  const rangeEnd = persistedConfig.rangeEnd || lazyList.total || 1;
+  const rangeEnd = persistedConfig.rangeEnd || orderMax || 1;
   const setRangeStart = (v: number) => updateConfig('rangeStart', v);
   const setRangeEnd = (v: number) => updateConfig('rangeEnd', v);
 
-  // 仅当持久化中没有保存过范围（rangeEnd 为 0）时，设置默认值
+  // 获取章节号范围
   useEffect(() => {
-    if (open && lazyList.total > 0 && persistedConfig.rangeEnd === 0) {
-      updateConfig('rangeEnd', lazyList.total);
+    if (open && projectId) {
+      chapterApi.getOrderIndexRange(projectId).then((res) => {
+        if (res.data) {
+          const minVal = res.data.min_order_index ?? 1;
+          const maxVal = res.data.max_order_index ?? 1;
+          setOrderMin(minVal);
+          setOrderMax(maxVal);
+          // 仅当持久化中没有保存过范围（rangeEnd 为 0）时，设置默认值
+          if (persistedConfig.rangeEnd === 0) {
+            updateConfig('rangeEnd', maxVal);
+          }
+          if (persistedConfig.rangeStart < minVal) {
+            updateConfig('rangeStart', minVal);
+          }
+        }
+      });
     }
-  }, [open, lazyList.total]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, projectId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSelectAll = () => {
     const ids = lazyList.chapters.map((c) => c.id);
@@ -251,20 +255,20 @@ export default function BatchTTSModal({ open, onClose, projectId, onComplete }: 
 
   const handleDeselectAll = () => setSelectedIds([]);
 
-  // 按范围选择：通过后端接口直接获取范围内所有章节 ID
+  // 按章节号范围选择：通过后端接口直接获取范围内所有章节 ID
   const [rangeLoading, setRangeLoading] = useState(false);
   const handleSelectRange = useCallback(async () => {
-    const start = Math.max(1, rangeStart);
-    const end = Math.min(lazyList.total, rangeEnd);
+    const start = Math.max(orderMin, rangeStart);
+    const end = Math.min(orderMax, rangeEnd);
     if (start > end) {
-      message.warning('起始章节不能大于结束章节');
+      message.warning('起始章节号不能大于结束章节号');
       return;
     }
 
     setRangeLoading(true);
     try {
-      // 通过后端接口获取范围内所有章节 ID
-      const res = await chapterApi.getIdsByRange(projectId, { start, end });
+      // 通过后端接口按章节号范围获取章节 ID
+      const res = await chapterApi.getIdsByOrderRange(projectId, { start_order: start, end_order: end });
       if (res.data && res.data.length > 0) {
         setSelectedIds(res.data);
         message.success(`已选中第 ${start} ~ ${end} 章，共 ${res.data.length} 个章节`);
@@ -272,15 +276,18 @@ export default function BatchTTSModal({ open, onClose, projectId, onComplete }: 
         setSelectedIds([]);
         message.warning(`第 ${start} ~ ${end} 章中没有章节`);
       }
-      // 清空列表并跳转到 L 位置
+      // 清空列表并跳转到对应位置
       lazyList.reset();
-      await lazyList.jumpToIndex(start);
+      // 根据 start 章节号估算位置来跳转
+      const posRes = await chapterApi.getIdsByOrderRange(projectId, { start_order: orderMin, end_order: start });
+      const position = posRes.data ? posRes.data.length : 1;
+      await lazyList.jumpToIndex(position);
     } catch {
       message.error('获取范围章节失败');
     } finally {
       setRangeLoading(false);
     }
-  }, [rangeStart, rangeEnd, lazyList, projectId]);
+  }, [rangeStart, rangeEnd, orderMin, orderMax, lazyList, projectId]);
 
   const statusColor: Record<string, string> = {
     pending: 'default',
@@ -396,16 +403,28 @@ export default function BatchTTSModal({ open, onClose, projectId, onComplete }: 
         />
       </div>
 
-      {/* 跳过已配音 */}
-      <div style={{ marginBottom: 16, background: '#181825', borderRadius: 8, padding: '8px 12px', border: '1px solid #313244' }}>
-        <Checkbox
-          checked={skipDone}
-          onChange={(e) => setSkipDone(e.target.checked)}
-          disabled={running}
-        >
-          <Text style={{ color: '#cdd6f4' }}>⏭️ 跳过已配音的台词</Text>
-        </Checkbox>
-        <Text style={{ color: '#585b70', fontSize: 11, marginLeft: 8 }}>（跳过 status=done 且音频文件存在的台词，适合中断后继续配音）</Text>
+      {/* 配音模式选项 */}
+      <div style={{ marginBottom: 16, background: '#181825', borderRadius: 8, padding: '8px 12px', border: '1px solid #313244', display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div>
+          <Checkbox
+            checked={skipDone}
+            onChange={(e) => { setSkipDone(e.target.checked); if (e.target.checked) setOnlyMissing(false); }}
+            disabled={running || onlyMissing}
+          >
+            <Text style={{ color: '#cdd6f4' }}>⏭️ 跳过已配音的台词</Text>
+          </Checkbox>
+          <Text style={{ color: '#585b70', fontSize: 11, marginLeft: 8 }}>（跳过 status=done 且音频文件存在的台词，适合中断后继续配音）</Text>
+        </div>
+        <div>
+          <Checkbox
+            checked={onlyMissing}
+            onChange={(e) => { setOnlyMissing(e.target.checked); if (e.target.checked) setSkipDone(false); }}
+            disabled={running}
+          >
+            <Text style={{ color: '#f38ba8' }}>🔧 仅补配缺失音频</Text>
+          </Checkbox>
+          <Text style={{ color: '#585b70', fontSize: 11, marginLeft: 8 }}>（仅对音频文件不存在的台词进行配音，不覆盖已有音频）</Text>
+        </div>
       </div>
 
       {/* 章节选择 */}
@@ -422,20 +441,20 @@ export default function BatchTTSModal({ open, onClose, projectId, onComplete }: 
           <Text style={{ color: '#a6adc8', fontSize: 12, whiteSpace: 'nowrap' }}>从第</Text>
           <InputNumber
             size="small"
-            min={1}
-            max={lazyList.total || 1}
+            min={orderMin}
+            max={orderMax}
             value={rangeStart}
-            onChange={(v) => setRangeStart(v ?? 1)}
+            onChange={(v) => setRangeStart(v ?? orderMin)}
             style={{ width: 80 }}
             disabled={running}
           />
           <Text style={{ color: '#a6adc8', fontSize: 12, whiteSpace: 'nowrap' }}>章 到 第</Text>
           <InputNumber
             size="small"
-            min={1}
-            max={lazyList.total || 1}
+            min={orderMin}
+            max={orderMax}
             value={rangeEnd}
-            onChange={(v) => setRangeEnd(v ?? lazyList.total)}
+            onChange={(v) => setRangeEnd(v ?? orderMax)}
             style={{ width: 80 }}
             disabled={running}
           />
@@ -467,8 +486,8 @@ export default function BatchTTSModal({ open, onClose, projectId, onComplete }: 
             <div style={{ textAlign: 'center', padding: 4, color: '#585b70', fontSize: 11 }}>↑ 向上滚动加载更多</div>
           )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {lazyList.chapters.map((ch, idx) => {
-              const globalIndex = lazyList.offsetStart + idx + 1;
+            {lazyList.chapters.map((ch) => {
+              const chapterNum = ch.order_index ?? '?';
               const cs = chapterStatuses.get(ch.id);
               return (
                 <div key={ch.id} data-chapter-item style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -483,7 +502,7 @@ export default function BatchTTSModal({ open, onClose, projectId, onComplete }: 
                     }}
                     disabled={running}
                   >
-                    <span style={{ color: '#585b70', fontSize: 11, marginRight: 4 }}>#{globalIndex}</span>
+                    <span style={{ color: '#585b70', fontSize: 11, marginRight: 4 }}>第{chapterNum}章</span>
                     <span style={{ color: '#cdd6f4' }}>{ch.title}</span>
                   </Checkbox>
                   <Space size={4}>

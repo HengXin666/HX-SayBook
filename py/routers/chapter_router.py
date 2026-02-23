@@ -236,6 +236,55 @@ async def get_ids_by_range(
     return Res(data=ids, code=200, message="查询成功")
 
 
+@router.get(
+    "/project/{project_id}/ids-by-order-range",
+    response_model=Res[List[int]],
+    summary="按章节号范围获取章节ID列表",
+    description="按 order_index 值范围获取章节ID列表",
+)
+async def get_ids_by_order_range(
+    project_id: int,
+    start_order: int = Query(1, ge=1, description="起始章节号（order_index）"),
+    end_order: int = Query(1, ge=1, description="结束章节号（order_index）"),
+    has_content_only: bool = Query(False, description="是否只返回有内容的章节"),
+    chapter_service: ChapterService = Depends(get_chapter_service),
+):
+    ids = chapter_service.get_ids_by_order_index_range(
+        project_id, start_order, end_order, has_content_only
+    )
+    return Res(data=ids, code=200, message="查询成功")
+
+
+@router.get(
+    "/project/{project_id}/order-index-range",
+    summary="获取项目下章节号的范围",
+    description="返回 order_index 的最小值和最大值",
+)
+async def get_order_index_range(
+    project_id: int,
+    chapter_service: ChapterService = Depends(get_chapter_service),
+):
+    min_val, max_val = chapter_service.get_order_index_range(project_id)
+    return Res(
+        data={"min_order_index": min_val, "max_order_index": max_val},
+        code=200,
+        message="查询成功",
+    )
+
+
+@router.post(
+    "/project/{project_id}/fix-order-index",
+    summary="修复章节号",
+    description="自动从标题中提取章节号，回填 order_index 字段（仅修复为 NULL 的记录）",
+)
+async def fix_order_index(
+    project_id: int,
+    chapter_service: ChapterService = Depends(get_chapter_service),
+):
+    fixed = chapter_service.fix_order_index(project_id)
+    return Res(data={"fixed_count": fixed}, code=200, message=f"已修复 {fixed} 个章节的章节号")
+
+
 # 修改，传入的参数是id
 @router.put(
     "/{chapter_id}",

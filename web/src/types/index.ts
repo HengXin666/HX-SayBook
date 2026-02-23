@@ -181,6 +181,8 @@ export interface BatchTTSRequest {
   speed?: number;
   /** 跳过已配音(status=done且音频文件存在)的台词 */
   skip_done?: boolean;
+  /** 仅补配缺失音频（audio_path为空或文件不存在的台词） */
+  only_missing?: boolean;
 }
 
 /** 语音调试请求 */

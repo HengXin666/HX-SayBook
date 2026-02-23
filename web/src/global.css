@@ -82,3 +82,8 @@ html, body, #root {
   overflow: hidden;
   transition: all 0.2s ease;
 }
+
+/* 修复 antd 暗色主题下 Checkbox ✓ 图标可能上下颠倒的问题 */
+.ant-checkbox-checked .ant-checkbox-inner::after {
+  transform: rotate(45deg) scaleY(1) !important;
+}

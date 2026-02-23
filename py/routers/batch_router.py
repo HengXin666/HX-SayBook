@@ -70,6 +70,7 @@ class BatchTTSRequest(BaseModel):
     chapter_ids: List[int]
     speed: float = 1.0  # 全局速度调节
     skip_done: bool = False  # 跳过已配音(status=done且音频文件存在)的台词
+    only_missing: bool = False  # 仅补配缺失音频（audio_path为空或文件不存在的台词）
 
 
 class VoicePreviewRequest(BaseModel):
@@ -694,7 +695,7 @@ async def batch_tts_generate(req: BatchTTSRequest):
     cancel_event = asyncio.Event()
     task = asyncio.create_task(
         _do_batch_tts(
-            req.project_id, req.chapter_ids, req.speed, cancel_event, req.skip_done
+            req.project_id, req.chapter_ids, req.speed, cancel_event, req.skip_done, req.only_missing
         )
     )
     _batch_tts_tasks[req.project_id] = {"cancel_event": cancel_event, "task": task}
@@ -708,7 +709,7 @@ async def batch_tts_generate(req: BatchTTSRequest):
     return Res(
         code=200,
         message="批量TTS配音任务已启动",
-        data={"chapter_count": len(req.chapter_ids), "skip_done": req.skip_done},
+        data={"chapter_count": len(req.chapter_ids), "skip_done": req.skip_done, "only_missing": req.only_missing},
     )
 
 
@@ -757,8 +758,9 @@ async def _do_batch_tts(
     speed: float = 1.0,
     cancel_event: asyncio.Event = None,
     skip_done: bool = False,
+    only_missing: bool = False,
 ):
-    """后台执行批量TTS配音（支持取消 + 跳过已配音 + 音色预上传）"""
+    """后台执行批量TTS配音（支持取消 + 跳过已配音 + 仅补配缺失 + 音色预上传）"""
     if cancel_event is None:
         cancel_event = asyncio.Event()
 
@@ -790,6 +792,12 @@ async def _do_batch_tts(
     finally:
         db.close()
 
+    mode_hint = ""
+    if only_missing:
+        mode_hint = "（仅补配缺失音频）"
+    elif skip_done:
+        mode_hint = "（跳过已配音）"
+
     await manager.broadcast(
         {
             "event": "batch_tts_start",
@@ -797,7 +805,7 @@ async def _do_batch_tts(
             "total_chapters": total_chapters,
             "total_lines": total_lines,
             "log": f"🎙️ 开始批量配音：共 {total_chapters} 章, {total_lines} 条台词"
-            + ("（跳过已配音）" if skip_done else ""),
+            + mode_hint,
         }
     )
 
@@ -910,6 +918,12 @@ async def _do_batch_tts(
                 ):
                     line_meta_list.append((line, line_idx, None, None, "skipped"))
                     continue
+
+                # 仅补配缺失模式：只处理音频文件不存在的台词
+                if only_missing:
+                    if line.audio_path and os.path.exists(line.audio_path):
+                        line_meta_list.append((line, line_idx, None, None, "skipped"))
+                        continue
 
                 role = role_svc.get_role(line.role_id)
                 if not role or not role.default_voice_id:

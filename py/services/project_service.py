@@ -95,6 +95,50 @@ class ProjectService:
     def search_projects(self, keyword: str) -> Sequence[ProjectEntity]:
         """模糊搜索项目"""
 
+    # ---------- 中文数字 → 阿拉伯数字 ----------
+    _CN_NUM = {
+        '零': 0, '一': 1, '二': 2, '三': 3, '四': 4,
+        '五': 5, '六': 6, '七': 7, '八': 8, '九': 9,
+        '十': 10, '百': 100, '千': 1000,
+    }
+
+    @staticmethod
+    def _cn_to_int(cn: str) -> int | None:
+        """将中文数字字符串转为整数，如 '一千四百二十二' → 1422"""
+        if not cn:
+            return None
+        # 纯阿拉伯数字
+        if cn.isdigit():
+            return int(cn)
+        result = 0
+        temp = 0
+        for ch in cn:
+            n = ProjectService._CN_NUM.get(ch)
+            if n is None:
+                return None  # 含无法识别的字符
+            if n >= 10:  # 十/百/千
+                if temp == 0:
+                    temp = 1
+                result += temp * n
+                temp = 0
+            else:
+                temp = n
+        result += temp
+        return result if result > 0 else None
+
+    # ---------- 从标题中提取章节号 ----------
+    _ORDER_PATTERN = re.compile(
+        r'^第([\d一二三四五六七八九十百千]+)章'
+    )
+
+    @staticmethod
+    def extract_order_index(title: str) -> int | None:
+        """从章节标题中提取章节号（阿拉伯或中文数字）"""
+        m = ProjectService._ORDER_PATTERN.match(title)
+        if not m:
+            return None
+        return ProjectService._cn_to_int(m.group(1))
+
     # 解析content，按照章节
     def parse_content(self, content):
         """解析内容，按照章节"""
@@ -115,8 +159,10 @@ class ProjectService:
 
             chapter_name = match.group(1).strip()
             chapter_content = content[start:end].strip()
-            chapters.append({"chapter_name": chapter_name, "content": chapter_content})
-        # 排序
-        # chapters.sort(key=lambda x: x["chapter_name"])
-        # 不需要排序了，因为是顺序解析得到的
+            order_index = self.extract_order_index(chapter_name)
+            chapters.append({
+                "chapter_name": chapter_name,
+                "content": chapter_content,
+                "order_index": order_index,
+            })
         return chapters
